@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=overlays-content">
+  <title>Grok2API - NSFW 工作台</title>
+  <link rel="icon" href="/static/common/img/favicon/favicon.ico">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#fafafa">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Grok2API">
+  <link rel="apple-touch-icon" href="/static/public/pwa/apple-touch-icon.png">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-mono/style.css" rel="stylesheet">
+  <script src="/static/common/js/theme.js?v=0.1.0"></script>
+  <link href="/static/common/css/common.css?v=0.3.7" rel="stylesheet">
+  <link href="/static/common/css/toast.css" rel="stylesheet">
+  <link href="/static/public/css/nsfw.css?v=0.3.4" rel="stylesheet">
+</head>
+
+<body class="public-page min-h-screen flex flex-col" style="background-color: var(--bg);">
+  <div id="toast-container" class="toast-container"></div>
+  <div id="app-header"></div>
+
+  <main class="flex-1 container mx-auto max-w-6xl px-4 sm:px-6 py-5 sm:py-8 fade-in">
+    <div class="space-y-4 sm:space-y-6">
+      <div class="page-head">
+        <div>
+          <h2 class="text-2xl font-semibold tracking-tight">NSFW 工作台</h2>
+          <p class="text-[var(--accents-4)] mt-1 text-sm">先生成 6 张候选图，再选中 1 张按 parentPostId 并行生成视频。</p>
+        </div>
+        <div class="status-stack">
+          <div id="imageStatusText" class="status-chip">候选图：未开始</div>
+          <div id="videoStatusText" class="status-chip">视频：未开始</div>
+        </div>
+      </div>
+
+      <div class="h-px bg-[var(--border)]"></div>
+
+      <div class="top-grid">
+        <div class="panel">
+          <div class="panel-title">生成参数</div>
+          <div class="form-grid">
+            <div class="field field-wide">
+              <label class="field-label" for="imagePromptInput">图片提示词</label>
+              <textarea id="imagePromptInput" class="geist-input form-textarea" placeholder="描述你要生成的 NSFW 候选图"></textarea>
+            </div>
+            <div class="field field-wide">
+              <label class="field-label" for="videoPromptInput">视频提示词（可选）</label>
+              <textarea id="videoPromptInput" class="geist-input form-textarea" placeholder="留空会按 spicy 模式处理；填写会走 custom 模式"></textarea>
+            </div>
+            <div class="field">
+              <label class="field-label" for="ratioSelect">画面比例</label>
+              <select id="ratioSelect" class="geist-input">
+                <option value="16:9" selected>16:9</option>
+                <option value="9:16">9:16</option>
+                <option value="3:2">3:2</option>
+                <option value="2:3">2:3</option>
+                <option value="1:1">1:1</option>
+              </select>
+            </div>
+            <div class="field">
+              <label class="field-label" for="videoParallelSelect">并行视频数</label>
+              <select id="videoParallelSelect" class="geist-input">
+                <option value="1">1</option>
+                <option value="2">2</option>
+                <option value="3">3</option>
+                <option value="4" selected>4</option>
+              </select>
+            </div>
+            <div class="field">
+              <label class="field-label" for="resolutionSelect">分辨率</label>
+              <select id="resolutionSelect" class="geist-input">
+                <option value="480p" selected>480p</option>
+                <option value="720p">720p</option>
+              </select>
+            </div>
+            <div class="field">
+              <label class="field-label" for="videoLengthSelect">视频时长</label>
+              <select id="videoLengthSelect" class="geist-input">
+                <option value="6" selected>6 秒</option>
+                <option value="10">10 秒</option>
+                <option value="15">15 秒</option>
+              </select>
+            </div>
+            <div class="field">
+              <label class="field-label" for="nsfwSelect">NSFW</label>
+              <select id="nsfwSelect" class="geist-input">
+                <option value="true" selected>开启</option>
+                <option value="false">关闭</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">操作</div>
+          <div class="action-grid">
+            <button id="generateBatchBtn" class="geist-button text-xs px-3">生成 6 张</button>
+            <button id="stopBatchBtn" class="geist-button-outline text-xs px-3">停止候选</button>
+            <button id="nextBatchBtn" class="geist-button-outline text-xs px-3">再来一批</button>
+            <button id="clearImagesBtn" class="geist-button-outline text-xs px-3">清空图片</button>
+            <button id="startVideoBtn" class="geist-button text-xs px-3">选中图生视频</button>
+            <button id="stopVideoBtn" class="geist-button-outline text-xs px-3">中断视频</button>
+            <button id="clearVideosBtn" class="geist-button-outline text-xs px-3 action-wide">清空视频结果</button>
+          </div>
+          <div id="selectedMeta" class="selected-meta">未选择候选图</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-title">候选图瀑布流</div>
+          <div id="imageCount" class="head-meta">0 张</div>
+        </div>
+        <div id="candidateEmpty" class="empty-state">点击“生成 6 张”开始</div>
+        <div id="candidateWaterfall" class="candidate-waterfall"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-title">视频结果</div>
+          <div id="videoCount" class="head-meta">0 个任务</div>
+        </div>
+        <div id="videoEmpty" class="empty-state">选中候选图后可并行生成 1~4 个视频</div>
+        <div id="videoResults" class="video-results"></div>
+      </div>
+    </div>
+  </main>
+
+  <div class="mobile-fab" data-mobile-fab>
+    <div class="mobile-fab-panel">
+      <div class="mobile-fab-actions">
+        <button class="geist-button" data-proxy-click="#generateBatchBtn" type="button">生成6张</button>
+        <button class="geist-button-outline" data-proxy-click="#stopBatchBtn" type="button">停候选</button>
+        <button class="geist-button-outline" data-proxy-click="#nextBatchBtn" type="button">再来一批</button>
+        <button class="geist-button-outline" data-proxy-click="#clearImagesBtn" type="button">清图片</button>
+        <button class="geist-button" data-proxy-click="#startVideoBtn" type="button">开始视频</button>
+        <button class="geist-button-outline" data-proxy-click="#stopVideoBtn" type="button">停视频</button>
+        <button class="geist-button-outline" data-proxy-click="#clearVideosBtn" type="button">清视频</button>
+      </div>
+    </div>
+    <button class="mobile-fab-toggle" data-fab-toggle type="button" aria-label="打开操作菜单">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M12 5v14M5 12h14" />
+      </svg>
+    </button>
+  </div>
+
+  <div id="lightbox" class="image-lightbox">
+    <button class="lightbox-close" id="closeLightbox">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <line x1="18" y1="6" x2="6" y2="18"></line>
+        <line x1="6" y1="6" x2="18" y2="18"></line>
+      </svg>
+    </button>
+    <button class="lightbox-nav lightbox-prev" id="lightboxPrev">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polyline points="15 18 9 12 15 6"></polyline>
+      </svg>
+    </button>
+    <button class="lightbox-nav lightbox-next" id="lightboxNext">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polyline points="9 18 15 12 9 6"></polyline>
+      </svg>
+    </button>
+    <img id="lightboxImg" src="" alt="">
+    <div class="lightbox-editor">
+      <div class="lightbox-edit-layout">
+        <div class="lightbox-edit-left">
+          <div class="lightbox-edit-main">
+            <textarea id="lightboxEditInput" class="lightbox-edit-input" placeholder="输入编辑提示词，例如：保持构图不变，把人物姿态改为站立"></textarea>
+            <button id="lightboxEditSend" class="lightbox-edit-send" type="button" disabled>发送编辑</button>
+          </div>
+          <div id="lightboxEditProgressWrap" class="lightbox-edit-progress-wrap">
+            <div id="lightboxEditProgressBar" class="lightbox-edit-progress-bar"></div>
+          </div>
+          <div id="lightboxEditProgressText" class="lightbox-edit-progress-text">编辑中 0%</div>
+        </div>
+        <aside class="lightbox-history-panel">
+          <div class="lightbox-history-head">
+            <div class="lightbox-history-title">编辑历史</div>
+            <div id="lightboxHistoryCount" class="lightbox-history-count">0 条</div>
+          </div>
+          <div id="lightboxHistoryEmpty" class="lightbox-history-empty">当前图片还没有编辑记录</div>
+          <div id="lightboxHistoryList" class="lightbox-history-list"></div>
+        </aside>
+      </div>
+    </div>
+  </div>
+
+  <div id="app-footer"></div>
+
+  <script src="/static/common/js/admin-auth.js?v=0.3.0"></script>
+  <script src="/static/common/js/parentpost-memory.js?v=0.1.0"></script>
+  <script src="/static/common/js/public-header.js?v=0.3.3"></script>
+  <script src="/static/common/js/footer.js?v=0.3.0"></script>
+  <script src="/static/common/js/mobile-fab.js?v=0.1.1"></script>
+  <script src="/static/common/js/toast.js"></script>
+  <script src="/static/common/js/pwa.js?v=0.1.1"></script>
+  <script src="/static/public/js/nsfw.js?v=0.3.3"></script>
+</body>
+
+</html>
