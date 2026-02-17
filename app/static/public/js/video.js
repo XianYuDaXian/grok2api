@@ -1810,11 +1810,6 @@
       const prefix = ffTaskPrefix('concat');
       const segASource = `${prefix}_a_source.mp4`;
       const segBSource = `${prefix}_b_source.mp4`;
-      const segA = `${prefix}_a.mp4`;
-      const segB = `${prefix}_b.mp4`;
-      const segANorm = `${prefix}_a_norm.mp4`;
-      const segBNorm = `${prefix}_b_norm.mp4`;
-      const listFile = `${prefix}_list.txt`;
       const mergedFile = `${prefix}_merged.mp4`;
       try {
         const trimSeconds = (Math.max(0, lockedTimestampMs) / 1000).toFixed(3);
@@ -1823,44 +1818,27 @@
         }
         await ffmpegWriteFile(ff, segASource, sourceStable);
         await ffmpegWriteFile(ff, segBSource, generatedBuffer);
-
-        await ffmpegExec(ff, ['-y', '-i', segASource, '-t', trimSeconds, '-c', 'copy', segA]);
-        await ffmpegWriteFile(
+        await ffmpegExec(
           ff,
-          listFile,
-          new TextEncoder().encode(`file '${segA}'\nfile '${segBSource}'\n`)
+          [
+            '-y',
+            '-i', segASource,
+            '-i', segBSource,
+            '-filter_complex',
+            `[0:v]trim=end=${trimSeconds},setpts=PTS-STARTPTS[v0];[1:v]setpts=PTS-STARTPTS[v1];[v0][v1]concat=n=2:v=1:a=0[v]`,
+            '-map', '[v]',
+            '-c:v', 'libx264',
+            '-preset', 'ultrafast',
+            '-pix_fmt', 'yuv420p',
+            '-r', '30',
+            mergedFile
+          ]
         );
-        try {
-          await ffmpegExec(ff, ['-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', mergedFile]);
-        } catch (copyErr) {
-          await ffmpegExec(
-            ff,
-            ['-y', '-i', segASource, '-t', trimSeconds, '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '48000', '-ac', '2', segANorm]
-          );
-          await ffmpegExec(
-            ff,
-            ['-y', '-i', segBSource, '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '48000', '-ac', '2', segBNorm]
-          );
-          await ffmpegWriteFile(
-            ff,
-            listFile,
-            new TextEncoder().encode(`file '${segANorm}'\nfile '${segBNorm}'\n`)
-          );
-          await ffmpegExec(
-            ff,
-            ['-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '48000', '-ac', '2', mergedFile]
-          );
-        }
         const merged = await ffmpegReadFile(ff, mergedFile);
         return new Blob([toStableUint8(merged)], { type: 'video/mp4' });
       } finally {
         await ffmpegDeleteFileSafe(ff, segASource);
         await ffmpegDeleteFileSafe(ff, segBSource);
-        await ffmpegDeleteFileSafe(ff, segA);
-        await ffmpegDeleteFileSafe(ff, segB);
-        await ffmpegDeleteFileSafe(ff, segANorm);
-        await ffmpegDeleteFileSafe(ff, segBNorm);
-        await ffmpegDeleteFileSafe(ff, listFile);
         await ffmpegDeleteFileSafe(ff, mergedFile);
       }
     };
