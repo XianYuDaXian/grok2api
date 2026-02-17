@@ -48,12 +48,10 @@ class AssetsDownloadReverse:
             url = f"{DOWNLOAD_API}{file_path}"
 
             # Get proxies
-            base_proxy = get_config("proxy.base_proxy_url")
-            assert_proxy = get_config("proxy.asset_proxy_url")
-            if assert_proxy:
-                proxies = {"http": assert_proxy, "https": assert_proxy}
-            else:
-                proxies = {"http": base_proxy, "https": base_proxy}
+            base_proxy = (get_config("proxy.base_proxy_url") or "").strip()
+            asset_proxy = (get_config("proxy.asset_proxy_url") or "").strip()
+            proxy_url = asset_proxy or base_proxy
+            proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
 
             # Guess content type by extension for Accept/Sec-Fetch-Dest
             content_type = _CONTENT_TYPES.get(Path(urllib.parse.urlparse(file_path).path).suffix.lower())
@@ -77,17 +75,18 @@ class AssetsDownloadReverse:
             timeout = get_config("asset.download_timeout")
             browser = get_config("proxy.browser")
 
-            async def _do_request():
-                response = await session.get(
-                    url,
-                    headers=headers,
-                    proxies=proxies,
-                    timeout=timeout,
-                    allow_redirects=True,
-                    impersonate=browser,
-                    stream=True,
-                )
-
+            async def _single_get(*, use_impersonate: bool, use_proxy: bool):
+                kwargs = {
+                    "headers": headers,
+                    "timeout": timeout,
+                    "allow_redirects": True,
+                    "stream": True,
+                }
+                if use_proxy and proxies:
+                    kwargs["proxies"] = proxies
+                if use_impersonate and browser:
+                    kwargs["impersonate"] = browser
+                response = await session.get(url, **kwargs)
                 if response.status_code != 200:
                     logger.error(
                         f"AssetsDownloadReverse: Download failed, {response.status_code}",
@@ -97,8 +96,18 @@ class AssetsDownloadReverse:
                         message=f"AssetsDownloadReverse: Download failed, {response.status_code}",
                         details={"status": response.status_code},
                     )
-
                 return response
+
+            async def _do_request():
+                try:
+                    return await _single_get(use_impersonate=True, use_proxy=True)
+                except Exception as first_err:
+                    # TLS/握手类问题常出现在代理或浏览器指纹组合，降级直连重试一次。
+                    logger.warning(
+                        "AssetsDownloadReverse primary request failed, fallback direct: "
+                        f"error={first_err}"
+                    )
+                    return await _single_get(use_impersonate=False, use_proxy=False)
 
             return await retry_on_status(_do_request)
 
