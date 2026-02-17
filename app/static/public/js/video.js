@@ -3,6 +3,8 @@
   const stopBtn = document.getElementById('stopBtn');
   const clearBtn = document.getElementById('clearBtn');
   const pickCachedVideoBtn = document.getElementById('pickCachedVideoBtn');
+  const uploadWorkVideoBtn = document.getElementById('uploadWorkVideoBtn');
+  const workVideoFileInput = document.getElementById('workVideoFileInput');
   const cacheVideoModal = document.getElementById('cacheVideoModal');
   const closeCacheVideoModalBtn = document.getElementById('closeCacheVideoModalBtn');
   const cacheVideoList = document.getElementById('cacheVideoList');
@@ -90,6 +92,7 @@
   let mergeTargetVideoName = '';
   let mergeCutMsA = 0;
   let mergeCutMsB = 0;
+  let workVideoObjectUrl = '';
 
   function buildHistoryTitle(type, serial) {
     const n = Math.max(1, parseInt(String(serial || '1'), 10) || 1);
@@ -460,6 +463,13 @@
       mergeTargetVideoName = '';
       mergeCutMsA = 0;
       mergeCutMsB = 0;
+      if (workVideoObjectUrl) {
+        try { URL.revokeObjectURL(workVideoObjectUrl); } catch (e) { /* ignore */ }
+        workVideoObjectUrl = '';
+      }
+      if (workVideoFileInput) {
+        workVideoFileInput.value = '';
+      }
       if (enterEditBtn) enterEditBtn.disabled = true;
       closeEditPanel();
       updateMergeLabels();
@@ -2313,6 +2323,28 @@
         }
         toast('读取缓存视频失败', 'error');
       }
+    });
+  }
+
+  if (uploadWorkVideoBtn && workVideoFileInput) {
+    uploadWorkVideoBtn.addEventListener('click', () => {
+      workVideoFileInput.click();
+    });
+    workVideoFileInput.addEventListener('change', () => {
+      const file = workVideoFileInput.files && workVideoFileInput.files[0];
+      if (!file) return;
+      if (workVideoObjectUrl) {
+        try { URL.revokeObjectURL(workVideoObjectUrl); } catch (e) { /* ignore */ }
+        workVideoObjectUrl = '';
+      }
+      const localUrl = URL.createObjectURL(file);
+      workVideoObjectUrl = localUrl;
+      selectedVideoItemId = `upload-${Date.now()}`;
+      selectedVideoUrl = localUrl;
+      if (enterEditBtn) enterEditBtn.disabled = false;
+      bindEditVideoSource(localUrl);
+      openEditPanel();
+      toast('本地视频已载入工作区', 'success');
     });
   }
 
