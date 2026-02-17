@@ -1826,9 +1826,9 @@
               '-i', segASource,
               '-i', segBSource,
               '-filter_complex',
-              `[0:v]trim=end=${trimSeconds},setpts=PTS-STARTPTS[v0];[0:a]atrim=end=${trimSeconds},asetpts=PTS-STARTPTS[a0];[1:v]setpts=PTS-STARTPTS[v1];[1:a]asetpts=PTS-STARTPTS[a1];[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]`,
+              `[0:v]trim=end=${trimSeconds},setpts=PTS-STARTPTS[v0];[1:v]setpts=PTS-STARTPTS[v1];[v0][v1]concat=n=2:v=1:a=0[v];[0:a]atrim=end=${trimSeconds},asetpts=PTS-STARTPTS[a0]`,
               '-map', '[v]',
-              '-map', '[a]',
+              '-map', '[a0]',
               '-c:v', 'libx264',
               '-preset', 'ultrafast',
               '-pix_fmt', 'yuv420p',
@@ -1839,46 +1839,23 @@
               mergedFile
             ]
           );
-        } catch (avConcatErr) {
-          try {
-            await ffmpegExec(
-              ff,
-              [
-                '-y',
-                '-i', segASource,
-                '-i', segBSource,
-                '-filter_complex',
-                `[0:v]trim=end=${trimSeconds},setpts=PTS-STARTPTS[v0];[0:a]atrim=end=${trimSeconds},asetpts=PTS-STARTPTS[a0];[1:v]setpts=PTS-STARTPTS[v1];[v0][v1]concat=n=2:v=1:a=0[v]`,
-                '-map', '[v]',
-                '-map', '[a0]',
-                '-c:v', 'libx264',
-                '-preset', 'ultrafast',
-                '-pix_fmt', 'yuv420p',
-                '-r', '30',
-                '-c:a', 'aac',
-                '-ar', '48000',
-                '-ac', '2',
-                mergedFile
-              ]
-            );
-          } catch (audioFallbackErr) {
-            await ffmpegExec(
-              ff,
-              [
-                '-y',
-                '-i', segASource,
-                '-i', segBSource,
-                '-filter_complex',
-                `[0:v]trim=end=${trimSeconds},setpts=PTS-STARTPTS[v0];[1:v]setpts=PTS-STARTPTS[v1];[v0][v1]concat=n=2:v=1:a=0[v]`,
-                '-map', '[v]',
-                '-c:v', 'libx264',
-                '-preset', 'ultrafast',
-                '-pix_fmt', 'yuv420p',
-                '-r', '30',
-                mergedFile
-              ]
-            );
-          }
+        } catch (audioFallbackErr) {
+          await ffmpegExec(
+            ff,
+            [
+              '-y',
+              '-i', segASource,
+              '-i', segBSource,
+              '-filter_complex',
+              `[0:v]trim=end=${trimSeconds},setpts=PTS-STARTPTS[v0];[1:v]setpts=PTS-STARTPTS[v1];[v0][v1]concat=n=2:v=1:a=0[v]`,
+              '-map', '[v]',
+              '-c:v', 'libx264',
+              '-preset', 'ultrafast',
+              '-pix_fmt', 'yuv420p',
+              '-r', '30',
+              mergedFile
+            ]
+          );
         }
         const merged = await ffmpegReadFile(ff, mergedFile);
         return new Blob([toStableUint8(merged)], { type: 'video/mp4' });
