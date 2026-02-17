@@ -1528,12 +1528,24 @@
       const generatedVideoUrl = await waitEditVideoResult(taskId, normalizeAuthHeader(authHeader));
       const mergedBlob = await concatVideosLocal(frameInfo.sourceBuffer, generatedVideoUrl);
       const mergedUrl = URL.createObjectURL(mergedBlob);
-      const item = getSelectedVideoItem();
+      let item = getSelectedVideoItem();
+      if (!item && videoStage) {
+        const items = Array.from(videoStage.querySelectorAll('.video-item'));
+        item = items.find((node) => String(node.dataset.url || '').trim() === String(selectedVideoUrl || '').trim()) || null;
+      }
+      if (!item) {
+        item = initPreviewSlot() || null;
+      }
       if (item) {
+        if (!selectedVideoItemId) {
+          selectedVideoItemId = String(item.dataset.index || '');
+        }
+        item.dataset.url = mergedUrl;
         const state = { previewItem: item };
         renderVideoFromUrl(state, mergedUrl);
-        bindEditVideoSource(mergedUrl);
+        refreshVideoSelectionUi();
       }
+      bindEditVideoSource(mergedUrl);
       editingRound += 1;
       setStatus('connected', `拼接完成（第 ${editingRound} 轮）`);
       toast('拼接完成，可继续下一轮编辑', 'success');
