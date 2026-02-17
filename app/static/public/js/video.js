@@ -840,6 +840,21 @@
     return null;
   }
 
+  function extractVideoUrlFromAnyText(text) {
+    const raw = String(text || '');
+    if (!raw) return '';
+    const info = extractVideoInfo(raw);
+    if (info && info.url) return info.url;
+    const mp4 = raw.match(/https?:\/\/[^\s"'<>]+\.mp4[^\s"'<>]*/i);
+    if (mp4 && mp4[0]) return mp4[0];
+    const local = raw.match(/\/v1\/files\/video\/[^\s"'<>]+/i);
+    if (local && local[0]) {
+      if (local[0].startsWith('http')) return local[0];
+      return `${window.location.origin}${local[0]}`;
+    }
+    return '';
+  }
+
   function renderVideoFromHtml(taskState, html) {
     const container = taskState && taskState.previewItem;
     if (!container) return;
@@ -1302,6 +1317,7 @@
       const url = buildSseUrl(taskId, rawPublicKey);
       const es = new EventSource(url);
       let buffer = '';
+      let rawEventBuffer = '';
       let done = false;
 
       const closeSafe = () => {
@@ -1310,13 +1326,15 @@
 
       es.onmessage = (event) => {
         if (!event || !event.data) return;
+        rawEventBuffer += String(event.data);
         if (event.data === '[DONE]') {
           if (done) return;
           const info = extractVideoInfo(buffer);
+          const anyUrl = extractVideoUrlFromAnyText(`${buffer}\n${rawEventBuffer}`);
           closeSafe();
-          if (info && info.url) {
+          if ((info && info.url) || anyUrl) {
             done = true;
-            resolve(info.url);
+            resolve((info && info.url) || anyUrl);
             return;
           }
           done = true;
@@ -1340,10 +1358,11 @@
         if (delta && delta.content) {
           buffer += String(delta.content);
           const info = extractVideoInfo(buffer);
-          if (info && info.url) {
+          const payloadUrl = extractVideoUrlFromAnyText(JSON.stringify(payload));
+          if ((info && info.url) || payloadUrl) {
             closeSafe();
             done = true;
-            resolve(info.url);
+            resolve((info && info.url) || payloadUrl);
           }
         }
       };
