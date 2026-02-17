@@ -2073,6 +2073,7 @@
       authHeader,
       taskIds: [],
       placeholders: new Map(),
+      failedPlaceholders: new Set(),
       sources: new Set(),
       pendingRejects: new Set(),
     };
@@ -2132,10 +2133,7 @@
                 successCount += 1;
               } catch (singleErr) {
                 if (item) {
-                  const completed = String(item.dataset.completed || '0') === '1';
-                  if (!completed) {
-                    removePreviewItem(item);
-                  }
+                  spliceRun.failedPlaceholders.add(item);
                 }
                 if (String(singleErr && singleErr.message || '') === 'edit_cancelled') {
                   return;
@@ -2148,11 +2146,21 @@
               return;
             }
             const missItem = spliceRun.placeholders.get(taskId) || null;
-            if (missItem) removePreviewItem(missItem);
+            if (missItem) spliceRun.failedPlaceholders.add(missItem);
           })
       );
       await Promise.allSettled(waitTasks);
       await processChain;
+      if (spliceRun.failedPlaceholders && spliceRun.failedPlaceholders.size) {
+        spliceRun.failedPlaceholders.forEach((item) => {
+          if (!item) return;
+          const completed = String(item.dataset.completed || '0') === '1';
+          if (!completed) {
+            removePreviewItem(item);
+          }
+        });
+        spliceRun.failedPlaceholders.clear();
+      }
 
       if (spliceRun.cancelled) {
         throw new Error('edit_cancelled');
