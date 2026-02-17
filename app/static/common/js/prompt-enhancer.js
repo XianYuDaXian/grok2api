@@ -31,16 +31,57 @@
         flex: 1;
         min-width: 0;
         width: 100%;
+        position: relative;
       }
-      .prompt-enhance-wrap.lightbox-mode > .inline-send-inside {
-        position: absolute;
-        left: 10px;
-        bottom: 10px;
-        z-index: 3;
-        height: 30px;
-        min-width: 88px;
-        padding: 0 10px;
+      .prompt-enhance-wrap.lightbox-mode > .inline-send-inside,
+      .prompt-enhance-wrap.lightbox-mode > #lightboxEditSend,
+      .prompt-enhance-wrap.lightbox-mode > .lightbox-edit-send {
+        position: absolute !important;
+        left: 10px !important;
+        bottom: 10px !important;
+        z-index: 4;
+        height: 30px !important;
+        min-width: 104px;
+        width: auto !important;
+        margin: 0 !important;
+        padding: 0 12px !important;
         border-radius: 8px;
+        flex: none !important;
+      }
+      .prompt-enhance-wrap.lightbox-mode > .prompt-enhance-btn {
+        position: absolute !important;
+        right: 10px !important;
+        bottom: 10px !important;
+        z-index: 4;
+        height: 30px !important;
+        min-width: 104px;
+        width: auto !important;
+        margin: 0 !important;
+        padding: 0 12px !important;
+      }
+      @media (max-width: 768px) {
+        .prompt-enhance-wrap.lightbox-mode > textarea {
+          padding-left: 104px;
+          padding-right: 104px;
+          padding-bottom: 50px;
+          min-height: 96px;
+        }
+        .prompt-enhance-wrap.lightbox-mode > .inline-send-inside,
+        .prompt-enhance-wrap.lightbox-mode > #lightboxEditSend,
+        .prompt-enhance-wrap.lightbox-mode > .lightbox-edit-send {
+          left: 8px !important;
+          bottom: 8px !important;
+          min-width: 92px;
+          height: 28px !important;
+          padding: 0 10px !important;
+        }
+        .prompt-enhance-wrap.lightbox-mode > .prompt-enhance-btn {
+          right: 8px !important;
+          bottom: 8px !important;
+          min-width: 92px;
+          height: 28px !important;
+          padding: 0 10px !important;
+        }
       }
       .prompt-enhance-btn {
         position: absolute;
@@ -311,24 +352,28 @@
     parent.insertBefore(wrapper, textarea);
     wrapper.appendChild(textarea);
 
-    if (isLightbox) {
-      const main = wrapper.parentElement;
-      const sendBtn = main ? main.querySelector('#lightboxEditSend, .lightbox-edit-send') : null;
-      if (sendBtn instanceof HTMLButtonElement && sendBtn.parentElement !== wrapper) {
+    function syncLightboxSendButton() {
+      if (!isLightbox) return;
+      const host = wrapper.parentElement;
+      if (!host) return;
+      const sendBtn = host.querySelector('#lightboxEditSend, .lightbox-edit-send');
+      if (!(sendBtn instanceof HTMLButtonElement)) return;
+      if (sendBtn.parentElement !== wrapper) {
         wrapper.appendChild(sendBtn);
       }
-      if (sendBtn instanceof HTMLButtonElement) {
-        sendBtn.classList.add('inline-send-inside');
+      sendBtn.classList.add('inline-send-inside');
+    }
+
+    if (isLightbox) {
+      syncLightboxSendButton();
+      requestAnimationFrame(syncLightboxSendButton);
+      setTimeout(syncLightboxSendButton, 80);
+      const host = wrapper.parentElement;
+      if (host) {
+        const observer = new MutationObserver(() => syncLightboxSendButton());
+        observer.observe(host, { childList: true, subtree: false });
+        wrapper.__lightboxSendObserver = observer;
       }
-      setTimeout(() => {
-        const lateBtn = wrapper.parentElement
-          ? wrapper.parentElement.querySelector('#lightboxEditSend, .lightbox-edit-send')
-          : null;
-        if (lateBtn instanceof HTMLButtonElement && lateBtn.parentElement !== wrapper) {
-          wrapper.appendChild(lateBtn);
-          lateBtn.classList.add('inline-send-inside');
-        }
-      }, 0);
     }
 
     const langBtn = document.createElement('button');
