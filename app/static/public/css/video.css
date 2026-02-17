@@ -1020,8 +1020,19 @@ html[data-theme='dark'] .cache-video-item.is-active .cache-video-thumb-wrap {
     gap: 8px;
   }
 
-  .edit-meta-grid {
+  .edit-panel .edit-meta-grid {
+    display: grid !important;
     grid-template-columns: 1fr !important;
+  }
+
+  .edit-panel .edit-meta-grid .meta-item {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .edit-panel .edit-meta-grid .meta-value {
+    max-width: 100%;
+    word-break: break-all;
   }
 
   .meta-item {
