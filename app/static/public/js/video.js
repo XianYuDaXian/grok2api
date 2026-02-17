@@ -91,6 +91,7 @@
   let mergeCutMsA = 0;
   let mergeCutMsB = 0;
   let cacheModalPickMode = 'edit';
+  let cacheModalAnchorEl = null;
 
   function toast(message, type) {
     if (typeof showToast === 'function') {
@@ -1093,16 +1094,44 @@
     if (editBody) editBody.classList.remove('hidden');
   }
 
-  function openCacheVideoModal() {
+  function positionCacheVideoModal() {
     if (!cacheVideoModal) return;
+    const content = cacheVideoModal.querySelector('.modal-content');
+    if (!(content instanceof HTMLElement)) return;
+    const anchor = cacheModalAnchorEl instanceof HTMLElement ? cacheModalAnchorEl : null;
+    if (!anchor) return;
+    const rect = anchor.getBoundingClientRect();
+    const margin = 8;
+    const vw = window.innerWidth || document.documentElement.clientWidth || 0;
+    const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+    const width = Math.min(560, Math.max(280, vw - 24));
+    let left = rect.left;
+    if (left + width > vw - 12) {
+      left = vw - 12 - width;
+    }
+    if (left < 12) left = 12;
+    let top = rect.bottom + margin;
+    const maxTop = vh - 120;
+    if (top > maxTop) {
+      top = Math.max(12, rect.top - margin - 420);
+    }
+    content.style.left = `${Math.round(left)}px`;
+    content.style.top = `${Math.round(top)}px`;
+  }
+
+  function openCacheVideoModal(anchorEl) {
+    if (!cacheVideoModal) return;
+    cacheModalAnchorEl = anchorEl instanceof HTMLElement ? anchorEl : null;
     cacheVideoModal.classList.remove('hidden');
     cacheVideoModal.classList.add('is-open');
+    positionCacheVideoModal();
   }
 
   function closeCacheVideoModal() {
     if (!cacheVideoModal) return;
     cacheVideoModal.classList.remove('is-open');
     cacheVideoModal.classList.add('hidden');
+    cacheModalAnchorEl = null;
   }
 
   function formatBytes(bytes) {
@@ -2026,7 +2055,7 @@
     pickCachedVideoBtn.addEventListener('click', async () => {
       try {
         cacheModalPickMode = 'edit';
-        openCacheVideoModal();
+        openCacheVideoModal(pickCachedVideoBtn);
         if (cacheVideoList) {
           cacheVideoList.innerHTML = '<div class="video-empty">正在读取缓存视频...</div>';
         }
@@ -2045,7 +2074,7 @@
     pickMergeVideoBtn.addEventListener('click', async () => {
       try {
         cacheModalPickMode = 'merge_target';
-        openCacheVideoModal();
+        openCacheVideoModal(pickMergeVideoBtn);
         if (cacheVideoList) {
           cacheVideoList.innerHTML = '<div class="video-empty">正在读取缓存视频...</div>';
         }
@@ -2072,6 +2101,18 @@
       }
     });
   }
+
+  window.addEventListener('resize', () => {
+    if (cacheVideoModal && !cacheVideoModal.classList.contains('hidden')) {
+      positionCacheVideoModal();
+    }
+  });
+
+  window.addEventListener('scroll', () => {
+    if (cacheVideoModal && !cacheVideoModal.classList.contains('hidden')) {
+      positionCacheVideoModal();
+    }
+  }, { passive: true });
 
   if (cacheVideoList) {
     cacheVideoList.addEventListener('click', (event) => {
