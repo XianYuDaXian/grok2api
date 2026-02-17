@@ -36,6 +36,7 @@ class VideoConfig(BaseModel):
     video_length: Optional[int] = Field(6, description="视频时长(秒): 6 / 10 / 15")
     resolution_name: Optional[str] = Field("480p", description="视频分辨率: 480p, 720p")
     preset: Optional[str] = Field("custom", description="风格预设: fun, normal, spicy")
+    n: Optional[int] = Field(None, ge=1, le=4, description="生成数量 (1-4，仅非流式)")
     concurrent: Optional[int] = Field(1, ge=1, le=4, description="并发视频数 (1-4，仅非流式)")
 
 class ImageConfig(BaseModel):
@@ -55,6 +56,7 @@ class ChatCompletionRequest(BaseModel):
     reasoning_effort: Optional[str] = Field(None, description="推理强度: none/minimal/low/medium/high/xhigh")
     temperature: Optional[float] = Field(0.8, description="采样温度: 0-2")
     top_p: Optional[float] = Field(0.95, description="nucleus 采样: 0-1")
+    n: Optional[int] = Field(None, ge=1, le=10, description="通用生成数量（视频可作为并发回退）")
     # 视频生成配置
     video_config: Optional[VideoConfig] = Field(None, description="视频生成参数")
     # 图片生成配置
@@ -515,20 +517,27 @@ def validate_request(request: ChatCompletionRequest):
                 param="video_config.preset",
                 code="invalid_preset",
             )
-        if config.concurrent is None:
-            config.concurrent = 1
-        if config.concurrent < 1 or config.concurrent > 4:
+        resolved_video_n = (
+            config.n
+            if config.n is not None
+            else (config.concurrent if config.concurrent is not None else request.n)
+        )
+        if resolved_video_n is None:
+            resolved_video_n = 1
+        if resolved_video_n < 1 or resolved_video_n > 4:
             raise ValidationException(
-                message="concurrent must be between 1 and 4",
-                param="video_config.concurrent",
+                message="video n must be between 1 and 4",
+                param="video_config.n",
                 code="invalid_concurrent",
             )
-        if bool(effective_stream) and config.concurrent > 1:
+        if bool(effective_stream) and resolved_video_n > 1:
             raise ValidationException(
-                message="Streaming is only supported when video_config.concurrent=1",
-                param="video_config.concurrent",
+                message="Streaming is only supported when video_config.n=1",
+                param="video_config.n",
                 code="invalid_stream_concurrent",
             )
+        config.n = int(resolved_video_n)
+        config.concurrent = int(resolved_video_n)
         request.video_config = config
 
 
@@ -691,7 +700,7 @@ async def chat_completions(request: ChatCompletionRequest):
     if model_info and model_info.is_video:
         # 提取视频配置 (默认值在 Pydantic 模型中处理)
         v_conf = request.video_config or VideoConfig()
-        video_concurrent = int(v_conf.concurrent or 1)
+        video_concurrent = int(v_conf.n or v_conf.concurrent or request.n or 1)
         if video_concurrent <= 1:
             result = await VideoService.completions(
                 model=request.model,
