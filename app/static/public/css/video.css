@@ -814,6 +814,10 @@ html[data-theme='dark'] .cache-video-item {
   border-bottom-color: #2b3440;
 }
 
+html[data-theme='dark'] .cache-video-thumb-wrap {
+  border-color: #2b3440;
+}
+
 .cache-video-item {
   display: flex;
   align-items: center;
@@ -829,6 +833,25 @@ html[data-theme='dark'] .cache-video-item {
 
 .cache-video-meta {
   min-width: 0;
+  flex: 1;
+}
+
+.cache-video-thumb-wrap {
+  width: 84px;
+  height: 48px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #0b0f14;
+  flex-shrink: 0;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+}
+
+.cache-video-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  background: #000;
 }
 
 .cache-video-name {

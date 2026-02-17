@@ -1289,6 +1289,9 @@
       const size = formatBytes(item.size_bytes);
       const mtime = formatMtime(item.mtime_ms);
       return `<div class="cache-video-item" data-url="${url}" data-name="${name}">
+        <div class="cache-video-thumb-wrap">
+          <video class="cache-video-thumb" src="${url}" preload="auto" muted playsinline></video>
+        </div>
         <div class="cache-video-meta">
           <div class="cache-video-name">${name || `video_${idx + 1}.mp4`}</div>
           <div class="cache-video-sub">${size} · ${mtime}</div>
@@ -1297,6 +1300,17 @@
       </div>`;
     }).join('');
     cacheVideoList.innerHTML = html;
+    const thumbs = cacheVideoList.querySelectorAll('.cache-video-thumb');
+    thumbs.forEach((el) => {
+      el.addEventListener('loadeddata', () => {
+        try {
+          el.currentTime = 0;
+          el.pause();
+        } catch (e) {
+          // ignore
+        }
+      }, { once: true });
+    });
   }
 
   function useCachedVideo(url, name) {
