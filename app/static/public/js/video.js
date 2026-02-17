@@ -2156,6 +2156,7 @@
       taskIds: [],
       placeholders: new Map(),
       failedPlaceholders: new Set(),
+      failedReasons: [],
       sources: new Set(),
       pendingRejects: new Set(),
     };
@@ -2217,6 +2218,7 @@
                 if (item) {
                   spliceRun.failedPlaceholders.add(item);
                 }
+                spliceRun.failedReasons.push(String(singleErr && singleErr.message ? singleErr.message : singleErr));
                 if (String(singleErr && singleErr.message || '') === 'edit_cancelled') {
                   return;
                 }
@@ -2227,6 +2229,7 @@
             if (String(err && err.message || '') === 'edit_cancelled') {
               return;
             }
+            spliceRun.failedReasons.push(String(err && err.message ? err.message : err));
             const missItem = spliceRun.placeholders.get(taskId) || null;
             if (missItem) spliceRun.failedPlaceholders.add(missItem);
           })
@@ -2248,7 +2251,8 @@
         throw new Error('edit_cancelled');
       }
       if (!successCount || !lastMergedUrl) {
-        throw new Error('edit_all_failed');
+        const firstReason = String((spliceRun.failedReasons && spliceRun.failedReasons[0]) || '').trim();
+        throw new Error(firstReason || 'edit_all_failed');
       }
       bindEditVideoSource(lastMergedUrl);
       scrollToWorkspaceTop();
@@ -2256,11 +2260,18 @@
       setStatus('connected', `拼接完成（成功 ${successCount}/${taskIds.length}）`);
       toast(`拼接完成，成功 ${successCount}/${taskIds.length}`, 'success');
     } catch (e) {
-      if (String(e && e.message ? e.message : e) === 'edit_cancelled') {
+      const msg = String(e && e.message ? e.message : e);
+      if (msg === 'edit_cancelled') {
         setStatus('', '未连接');
       } else {
         setStatus('error', '拼接失败');
-        toast(`拼接失败: ${String(e && e.message ? e.message : e)}`, 'error');
+        if (msg === 'extract_frame_failed_near_tail') {
+          toast('拼接失败: 当前帧过于接近结尾，请前移 2-3 帧再试', 'error');
+        } else if (msg === 'edit_video_url_missing') {
+          toast('拼接失败: 生成结果未返回视频地址', 'error');
+        } else {
+          toast(`拼接失败: ${msg}`, 'error');
+        }
       }
     } finally {
       spliceRun.done = true;
