@@ -958,17 +958,6 @@ html[data-theme='dark'] .cache-video-item.is-active .cache-video-thumb-wrap {
 }
 
 @media (max-width: 900px) {
-  .video-actions,
-  .preview-actions,
-  .upload-block,
-  .clear-block {
-    display: none !important;
-  }
-
-  #applyParentBtn {
-    display: none !important;
-  }
-
   .video-header-row {
     gap: 8px;
   }
