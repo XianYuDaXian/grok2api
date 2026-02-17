@@ -676,43 +676,8 @@
     }
   }
 
-  async function resetFfmpegInstance() {
-    if (!ffmpegInstance) return;
-    try {
-      if (typeof ffmpegInstance.terminate === 'function') {
-        await ffmpegInstance.terminate();
-      }
-    } catch (e) {
-      // ignore
-    }
-    ffmpegInstance = null;
-    ffmpegLoaded = false;
-    ffmpegLoading = false;
-  }
-
-  function toStableUint8(input) {
-    if (input instanceof Uint8Array) {
-      return new Uint8Array(input);
-    }
-    if (input instanceof ArrayBuffer) {
-      return new Uint8Array(input.slice(0));
-    }
-    if (ArrayBuffer.isView(input)) {
-      const view = input;
-      const start = view.byteOffset || 0;
-      const end = start + (view.byteLength || 0);
-      return new Uint8Array(view.buffer.slice(start, end));
-    }
-    throw new Error('binary_input_invalid');
-  }
-
-  function toStableArrayBuffer(input) {
-    return toStableUint8(input).buffer;
-  }
-
   async function sha256Hex(bytes) {
-    const stableBytes = toStableUint8(bytes);
-    const hashBuffer = await crypto.subtle.digest('SHA-256', stableBytes);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', bytes);
     return Array.from(new Uint8Array(hashBuffer)).map((b) => b.toString(16).padStart(2, '0')).join('');
   }
 
@@ -721,17 +686,15 @@
     if (!resp.ok) {
       throw new Error(`fetch_failed_${resp.status}`);
     }
-    const raw = await resp.arrayBuffer();
-    return raw.slice(0);
+    return await resp.arrayBuffer();
   }
 
   async function ffmpegWriteFile(ff, name, data) {
-    const stable = toStableUint8(data);
     if (typeof ff.writeFile === 'function') {
-      return await ff.writeFile(name, stable);
+      return await ff.writeFile(name, new Uint8Array(data));
     }
     if (ff.FS) {
-      ff.FS('writeFile', name, stable);
+      ff.FS('writeFile', name, new Uint8Array(data));
       return;
     }
     throw new Error('ffmpeg_writefile_unsupported');
@@ -740,11 +703,13 @@
   async function ffmpegReadFile(ff, name) {
     if (typeof ff.readFile === 'function') {
       const out = await ff.readFile(name);
-      return toStableUint8(out);
+      const view = out instanceof Uint8Array ? out : new Uint8Array(out);
+      return new Uint8Array(view);
     }
     if (ff.FS) {
       const out = ff.FS('readFile', name);
-      return toStableUint8(out);
+      const view = out instanceof Uint8Array ? out : new Uint8Array(out);
+      return new Uint8Array(view);
     }
     throw new Error('ffmpeg_readfile_unsupported');
   }
@@ -757,24 +722,6 @@
       return await ff.run(...args);
     }
     throw new Error('ffmpeg_exec_unsupported');
-  }
-
-  async function ffmpegDeleteFileSafe(ff, name) {
-    try {
-      if (typeof ff.deleteFile === 'function') {
-        await ff.deleteFile(name);
-        return;
-      }
-      if (ff.FS) {
-        ff.FS('unlink', name);
-      }
-    } catch (e) {
-      // ignore
-    }
-  }
-
-  function ffTaskPrefix(tag) {
-    return `${tag}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   }
 
   function buildSseUrl(taskId, rawPublicKey) {
@@ -1431,105 +1378,62 @@
   }
 
   async function extractFrameAtCurrentPoint(videoUrl) {
+    const ff = await ensureFfmpeg();
     const srcBuffer = await fetchArrayBuffer(videoUrl);
+    await ffmpegWriteFile(ff, 'edit_input.mp4', srcBuffer);
     const seconds = (Math.max(0, lockedTimestampMs) / 1000).toFixed(3);
-
-    const runOnce = async () => {
-      await resetFfmpegInstance();
-      const ff = await ensureFfmpeg();
-      const prefix = ffTaskPrefix('edit');
-      const inputName = `${prefix}_input.mp4`;
-      const frameName = `${prefix}_frame.png`;
-      await ffmpegWriteFile(ff, inputName, srcBuffer);
-      // 采用精确 seek：把 -ss 放在输入后，避免 keyframe 近似定位导致错帧。
-      await ffmpegExec(ff, ['-y', '-i', inputName, '-ss', seconds, '-accurate_seek', '-frames:v', '1', frameName]);
-      const frameBytes = await ffmpegReadFile(ff, frameName);
-      const frameHash = await sha256Hex(frameBytes);
-      let binary = '';
-      const chunk = 0x8000;
-      for (let i = 0; i < frameBytes.length; i += chunk) {
-        binary += String.fromCharCode(...frameBytes.subarray(i, i + chunk));
-      }
-      const dataUrl = `data:image/png;base64,${btoa(binary)}`;
-      await ffmpegDeleteFileSafe(ff, inputName);
-      await ffmpegDeleteFileSafe(ff, frameName);
-      return { dataUrl, frameHash };
-    };
-
-    let frameResult;
-    try {
-      frameResult = await runOnce();
-    } catch (e) {
-      if (String(e && e.message ? e.message : e).includes('FS error')) {
-        frameResult = await runOnce();
-      } else {
-        throw e;
-      }
-    }
-
+    await ffmpegExec(ff, ['-y', '-ss', seconds, '-i', 'edit_input.mp4', '-frames:v', '1', 'edit_frame.png']);
+    const frameBytes = await ffmpegReadFile(ff, 'edit_frame.png');
+    const frameHash = await sha256Hex(frameBytes);
     const sourceHash = await sha256Hex(srcBuffer);
-    lastFrameHash = frameResult.frameHash;
+    let binary = '';
+    const chunk = 0x8000;
+    for (let i = 0; i < frameBytes.length; i += chunk) {
+      binary += String.fromCharCode(...frameBytes.subarray(i, i + chunk));
+    }
+    const dataUrl = `data:image/png;base64,${btoa(binary)}`;
+    lastFrameHash = frameHash;
     setEditMeta();
     return {
-      dataUrl: frameResult.dataUrl,
-      frameHash: frameResult.frameHash,
+      dataUrl,
+      frameHash,
       sourceHash,
-      sourceBuffer: toStableArrayBuffer(srcBuffer),
+      sourceBuffer: srcBuffer,
     };
   }
 
   async function concatVideosLocal(sourceBuffer, generatedVideoUrl) {
-    const sourceStable = toStableArrayBuffer(sourceBuffer);
+    const ff = await ensureFfmpeg();
     const generatedBuffer = await fetchArrayBuffer(generatedVideoUrl);
+    await ffmpegWriteFile(ff, 'seg_a_source.mp4', sourceBuffer);
+    await ffmpegWriteFile(ff, 'seg_b_source.mp4', generatedBuffer);
     const trimSeconds = (Math.max(0, lockedTimestampMs) / 1000).toFixed(3);
-
-    const runOnce = async () => {
-      await resetFfmpegInstance();
-      const ff = await ensureFfmpeg();
-      const prefix = ffTaskPrefix('concat');
-      const segASource = `${prefix}_a_source.mp4`;
-      const segBSource = `${prefix}_b_source.mp4`;
-      const segA = `${prefix}_a.mp4`;
-      const listFile = `${prefix}_list.txt`;
-      const mergedFile = `${prefix}_merged.mp4`;
-      const filesToClean = [segASource, segBSource, segA, listFile, mergedFile];
-      try {
-        if (Number(trimSeconds) <= 0) {
-          return new Blob([toStableUint8(generatedBuffer)], { type: 'video/mp4' });
-        }
-        await ffmpegWriteFile(ff, segASource, sourceStable);
-        await ffmpegWriteFile(ff, segBSource, generatedBuffer);
-        await ffmpegExec(ff, ['-y', '-i', segASource, '-t', trimSeconds, '-c', 'copy', segA]);
-        await ffmpegWriteFile(
-          ff,
-          listFile,
-          new TextEncoder().encode(`file '${segA}'\nfile '${segBSource}'\n`)
-        );
-        try {
-          await ffmpegExec(ff, ['-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', mergedFile]);
-        } catch (copyErr) {
-          await ffmpegExec(
-            ff,
-            ['-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '48000', '-ac', '2', mergedFile]
-          );
-        }
-        const merged = await ffmpegReadFile(ff, mergedFile);
-        return new Blob([toStableUint8(merged)], { type: 'video/mp4' });
-      } finally {
-        for (const file of filesToClean) {
-          await ffmpegDeleteFileSafe(ff, file);
-        }
-      }
-    };
-
-    try {
-      return await runOnce();
-    } catch (e) {
-      if (String(e && e.message ? e.message : e).includes('FS error')) {
-        return await runOnce();
-      }
-      throw e;
+    if (Number(trimSeconds) > 0) {
+      await ffmpegExec(
+        ff,
+        ['-y', '-i', 'seg_a_source.mp4', '-t', trimSeconds, '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '48000', '-ac', '2', 'seg_a.mp4']
+      );
+      await ffmpegExec(
+        ff,
+        ['-y', '-i', 'seg_b_source.mp4', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '48000', '-ac', '2', 'seg_b.mp4']
+      );
+      await ffmpegWriteFile(
+        ff,
+        'concat_list.txt',
+        new TextEncoder().encode("file 'seg_a.mp4'\nfile 'seg_b.mp4'\n")
+      );
+      await ffmpegExec(
+        ff,
+        ['-y', '-f', 'concat', '-safe', '0', '-i', 'concat_list.txt', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '48000', '-ac', '2', 'merged.mp4']
+      );
+    } else {
+      await ffmpegExec(
+        ff,
+        ['-y', '-i', 'seg_b_source.mp4', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '48000', '-ac', '2', 'merged.mp4']
+      );
     }
+    const merged = await ffmpegReadFile(ff, 'merged.mp4');
+    return new Blob([merged], { type: 'video/mp4' });
   }
 
   async function runSplice() {
@@ -1705,7 +1609,6 @@
       }
     });
   }
-
   if (closeCacheVideoModalBtn) {
     closeCacheVideoModalBtn.addEventListener('click', () => {
       closeCacheVideoModal();
