@@ -1810,6 +1810,7 @@
       const prefix = ffTaskPrefix('concat');
       const segASource = `${prefix}_a_source.mp4`;
       const segBSource = `${prefix}_b_source.mp4`;
+      const mergedVideoFile = `${prefix}_merged_video.mp4`;
       const mergedFile = `${prefix}_merged.mp4`;
       try {
         const trimSeconds = (Math.max(0, lockedTimestampMs) / 1000).toFixed(3);
@@ -1828,18 +1829,14 @@
               '-filter_complex',
               `[0:v]trim=end=${trimSeconds},setpts=PTS-STARTPTS[v0];[1:v]setpts=PTS-STARTPTS[v1];[v0][v1]concat=n=2:v=1:a=0[v];[0:a]atrim=end=${trimSeconds},asetpts=PTS-STARTPTS[a0]`,
               '-map', '[v]',
-              '-map', '[a0]',
               '-c:v', 'libx264',
               '-preset', 'ultrafast',
               '-pix_fmt', 'yuv420p',
               '-r', '30',
-              '-c:a', 'aac',
-              '-ar', '48000',
-              '-ac', '2',
-              mergedFile
+              mergedVideoFile
             ]
           );
-        } catch (audioFallbackErr) {
+        } catch (videoFallbackErr) {
           await ffmpegExec(
             ff,
             [
@@ -1853,15 +1850,38 @@
               '-preset', 'ultrafast',
               '-pix_fmt', 'yuv420p',
               '-r', '30',
+              mergedVideoFile
+            ]
+          );
+        }
+        try {
+          await ffmpegExec(
+            ff,
+            [
+              '-y',
+              '-i', mergedVideoFile,
+              '-t', trimSeconds,
+              '-i', segASource,
+              '-map', '0:v',
+              '-map', '1:a?',
+              '-c:v', 'copy',
+              '-c:a', 'aac',
+              '-ar', '48000',
+              '-ac', '2',
+              '-shortest',
               mergedFile
             ]
           );
+        } catch (audioMuxErr) {
+          const mergedOnly = await ffmpegReadFile(ff, mergedVideoFile);
+          return new Blob([toStableUint8(mergedOnly)], { type: 'video/mp4' });
         }
         const merged = await ffmpegReadFile(ff, mergedFile);
         return new Blob([toStableUint8(merged)], { type: 'video/mp4' });
       } finally {
         await ffmpegDeleteFileSafe(ff, segASource);
         await ffmpegDeleteFileSafe(ff, segBSource);
+        await ffmpegDeleteFileSafe(ff, mergedVideoFile);
         await ffmpegDeleteFileSafe(ff, mergedFile);
       }
     };
