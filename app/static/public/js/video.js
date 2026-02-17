@@ -643,7 +643,7 @@
           '/v1/public/video/vendor/ffmpeg-core.wasm',
         ],
         workerURL: [
-          '/v1/public/video/vendor/ffmpeg-core.worker.js',
+          // worker 文件在部分 ffmpeg core 版本中不存在，默认不请求以避免无效报错
         ],
       };
       // 统一转为同源 blob URL，避免跨域 Worker 限制，同时实现多源超时切换。

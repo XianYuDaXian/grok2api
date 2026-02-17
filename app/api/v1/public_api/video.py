@@ -454,6 +454,11 @@ async def public_video_vendor(filename: str):
             except Exception as e:
                 last_error = str(e)
 
+    if filename == "ffmpeg-core.worker.js":
+        raise HTTPException(
+            status_code=404,
+            detail="optional worker asset not found",
+        )
     raise HTTPException(
         status_code=502,
         detail=f"vendor fetch failed: {filename}, error={last_error or 'unknown'}",
