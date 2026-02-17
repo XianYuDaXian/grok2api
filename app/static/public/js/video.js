@@ -1490,43 +1490,36 @@
       const segASource = `${prefix}_a_source.mp4`;
       const segBSource = `${prefix}_b_source.mp4`;
       const segA = `${prefix}_a.mp4`;
-      const segB = `${prefix}_b.mp4`;
       const listFile = `${prefix}_list.txt`;
       const mergedFile = `${prefix}_merged.mp4`;
-      await ffmpegWriteFile(ff, segASource, sourceStable);
-      await ffmpegWriteFile(ff, segBSource, generatedBuffer);
-      if (Number(trimSeconds) > 0) {
-        await ffmpegExec(
-          ff,
-          ['-y', '-i', segASource, '-t', trimSeconds, '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '48000', '-ac', '2', segA]
-        );
-        await ffmpegExec(
-          ff,
-          ['-y', '-i', segBSource, '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '48000', '-ac', '2', segB]
-        );
+      const filesToClean = [segASource, segBSource, segA, listFile, mergedFile];
+      try {
+        if (Number(trimSeconds) <= 0) {
+          return new Blob([toStableUint8(generatedBuffer)], { type: 'video/mp4' });
+        }
+        await ffmpegWriteFile(ff, segASource, sourceStable);
+        await ffmpegWriteFile(ff, segBSource, generatedBuffer);
+        await ffmpegExec(ff, ['-y', '-i', segASource, '-t', trimSeconds, '-c', 'copy', segA]);
         await ffmpegWriteFile(
           ff,
           listFile,
-          new TextEncoder().encode(`file '${segA}'\nfile '${segB}'\n`)
+          new TextEncoder().encode(`file '${segA}'\nfile '${segBSource}'\n`)
         );
-        await ffmpegExec(
-          ff,
-          ['-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '48000', '-ac', '2', mergedFile]
-        );
-      } else {
-        await ffmpegExec(
-          ff,
-          ['-y', '-i', segBSource, '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '48000', '-ac', '2', mergedFile]
-        );
+        try {
+          await ffmpegExec(ff, ['-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', mergedFile]);
+        } catch (copyErr) {
+          await ffmpegExec(
+            ff,
+            ['-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '48000', '-ac', '2', mergedFile]
+          );
+        }
+        const merged = await ffmpegReadFile(ff, mergedFile);
+        return new Blob([toStableUint8(merged)], { type: 'video/mp4' });
+      } finally {
+        for (const file of filesToClean) {
+          await ffmpegDeleteFileSafe(ff, file);
+        }
       }
-      const merged = await ffmpegReadFile(ff, mergedFile);
-      await ffmpegDeleteFileSafe(ff, segASource);
-      await ffmpegDeleteFileSafe(ff, segBSource);
-      await ffmpegDeleteFileSafe(ff, segA);
-      await ffmpegDeleteFileSafe(ff, segB);
-      await ffmpegDeleteFileSafe(ff, listFile);
-      await ffmpegDeleteFileSafe(ff, mergedFile);
-      return new Blob([toStableUint8(merged)], { type: 'video/mp4' });
     };
 
     try {
