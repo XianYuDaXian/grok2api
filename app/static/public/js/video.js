@@ -490,11 +490,10 @@
     const downloadBtn = item.querySelector('.video-download');
     const link = item.querySelector('.video-item-link');
     const safeUrl = url || '';
-    const isBlobUrl = /^blob:/i.test(safeUrl);
     item.dataset.url = safeUrl;
     if (link) {
-      link.textContent = isBlobUrl ? '' : safeUrl;
-      link.classList.toggle('has-url', Boolean(safeUrl) && !isBlobUrl);
+      link.textContent = '';
+      link.classList.remove('has-url');
     }
     if (openBtn) {
       if (safeUrl) {
@@ -1294,13 +1293,6 @@
         } else if (info.url) {
           renderVideoFromUrl(taskState, info.url);
         }
-        const item = taskState.previewItem || null;
-        const itemUrl = item ? String(item.dataset.url || '').trim() : '';
-        if (item && itemUrl) {
-          selectedVideoItemId = String(item.dataset.index || '');
-          refreshVideoSelectionUi();
-          bindEditVideoSource(itemUrl);
-        }
       }
       return;
     }
@@ -1499,6 +1491,7 @@
   }
 
   async function createEditVideoTask(authHeader, frameDataUrl, editPrompt, editCtx) {
+    const concurrent = getConcurrentValue();
     const res = await fetch('/v1/public/video/start', {
       method: 'POST',
       headers: {
@@ -1515,7 +1508,8 @@
         video_length: lengthSelect ? parseInt(lengthSelect.value, 10) : 6,
         resolution_name: resolutionSelect ? resolutionSelect.value : '480p',
         preset: presetSelect ? presetSelect.value : 'custom',
-        concurrent: getConcurrentValue(),
+        concurrent,
+        n: concurrent,
         edit_context: editCtx
       })
     });
@@ -1524,7 +1518,10 @@
       throw new Error(text || 'create_edit_task_failed');
     }
     const data = await res.json();
-    const taskId = String((data && data.task_id) || '').trim();
+    let taskId = String((data && data.task_id) || '').trim();
+    if (!taskId && data && Array.isArray(data.task_ids) && data.task_ids.length) {
+      taskId = String(data.task_ids[0] || '').trim();
+    }
     if (!taskId) throw new Error('edit_task_id_missing');
     return taskId;
   }
