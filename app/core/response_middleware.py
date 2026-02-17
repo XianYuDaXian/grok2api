@@ -130,7 +130,10 @@ class ResponseLoggerMiddleware(BaseHTTPMiddleware):
         # 记录请求信息
         req_payload = await _extract_request_payload(request)
         logger.info(
-            f"Request: {request.method} {request.url.path} payload={req_payload}",
+            "Request: {} {} payload={}",
+            request.method,
+            request.url.path,
+            req_payload,
             extra={
                 "traceID": trace_id,
                 "method": request.method,
