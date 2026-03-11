@@ -8,6 +8,7 @@ import asyncio
 import base64
 import hashlib
 import os
+import time
 from pathlib import Path
 from typing import List, Optional, Tuple
 from urllib.parse import urlparse
@@ -93,10 +94,19 @@ class DownloadService:
         fmt = fmt.lower() if isinstance(fmt, str) else "url"
         if fmt not in ("url", "markdown", "html"):
             fmt = "url"
+        started_at = time.perf_counter()
+        logger.info(
+            f"Render video started: video_url={video_url}, thumbnail_url={thumbnail_url or '-'}, format={fmt}"
+        )
         final_video_url = await self.resolve_url(video_url, token, "video")
         final_thumb_url = ""
         if thumbnail_url:
             final_thumb_url = await self.resolve_url(thumbnail_url, token, "image")
+        duration_ms = (time.perf_counter() - started_at) * 1000
+        logger.info(
+            f"Render video resolved: final_video_url={final_video_url}, "
+            f"final_thumbnail_url={final_thumb_url or '-'}, duration_ms={duration_ms:.2f}"
+        )
         if fmt == "url":
             return final_video_url
         if fmt == "markdown":
@@ -186,11 +196,15 @@ class DownloadService:
         Returns:
             Tuple[Optional[Path], str]: The path of the downloaded file and the MIME type.
         """
+        started_at = time.perf_counter()
         async with _get_download_semaphore():
             file_path = self._normalize_path(file_path)
             cache_dir = self.image_dir if media_type == "image" else self.video_dir
             filename = file_path.lstrip("/").replace("/", "-")
             cache_path = cache_dir / filename
+            logger.info(
+                f"Download started: media_type={media_type}, file_path={file_path}, cache_path={cache_path}"
+            )
 
             lock_name = (
                 f"dl_{media_type}_{hashlib.sha1(str(cache_path).encode()).hexdigest()[:16]}"
@@ -199,6 +213,11 @@ class DownloadService:
             async with _file_lock(lock_name, timeout=lock_timeout):
                 session = await self.create()
                 response = await AssetsDownloadReverse.request(session, token, file_path)
+                logger.info(
+                    f"Download response received: media_type={media_type}, file_path={file_path}, "
+                    f"status={getattr(response, 'status_code', '-')}, "
+                    f"content_type={(response.headers.get('content-type', 'application/octet-stream').split(';')[0])}"
+                )
 
                 tmp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
                 try:
@@ -220,7 +239,16 @@ class DownloadService:
                 mime = response.headers.get(
                     "content-type", "application/octet-stream"
                 ).split(";")[0]
-                logger.info(f"Downloaded: {file_path}")
+                file_size = 0
+                try:
+                    file_size = cache_path.stat().st_size
+                except Exception:
+                    file_size = 0
+                duration_ms = (time.perf_counter() - started_at) * 1000
+                logger.info(
+                    f"Downloaded: {file_path}, media_type={media_type}, cache_path={cache_path}, "
+                    f"size_bytes={file_size}, mime={mime}, duration_ms={duration_ms:.2f}"
+                )
 
                 asyncio.create_task(self._check_limit())
 

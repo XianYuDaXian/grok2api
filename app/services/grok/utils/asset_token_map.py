@@ -1,6 +1,5 @@
 import json
 import asyncio
-from pathlib import Path
 from typing import Optional, Dict
 
 from app.core.logger import logger
@@ -10,7 +9,7 @@ from app.services.grok.utils.locks import _file_lock
 
 class AssetTokenMap:
     """管理 postId 与生成时使用 token 的映射关系"""
-    
+
     _instance: Optional["AssetTokenMap"] = None
     _lock = asyncio.Lock()
     _file_path = DATA_DIR / "asset_tokens.json"
@@ -32,7 +31,7 @@ class AssetTokenMap:
         """从本地加载映射关系"""
         if self._initialized:
             return
-            
+
         try:
             if self._file_path.exists():
                 async with _file_lock("asset_token_map", timeout=5):
@@ -49,7 +48,9 @@ class AssetTokenMap:
         """持久化映射关系"""
         try:
             async with _file_lock("asset_token_map", timeout=5):
-                self._file_path.write_text(json.dumps(self._cache, ensure_ascii=False), encoding="utf-8")
+                self._file_path.write_text(
+                    json.dumps(self._cache, ensure_ascii=False), encoding="utf-8"
+                )
         except Exception as e:
             logger.error(f"Failed to save asset tokens: {e}")
 
@@ -57,10 +58,10 @@ class AssetTokenMap:
         """保存 postId -> token 的映射"""
         if not post_id or not token:
             return
-            
+
         # 标准化 token 格式
         raw_token = token[4:] if token.startswith("sso=") else token
-        
+
         # 只保存需要的键值，防止频繁修改
         if self._cache.get(post_id) != raw_token:
             self._cache[post_id] = raw_token
@@ -71,7 +72,7 @@ class AssetTokenMap:
         """找回当时生成该 post_id 的 token"""
         if not post_id:
             return None
-        
+
         token = self._cache.get(post_id)
         if token:
             logger.info(f"Retrieved mapped token for extension post_id: {post_id}")

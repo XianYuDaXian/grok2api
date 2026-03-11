@@ -5,6 +5,7 @@ Grok video generation service.
 import asyncio
 import uuid
 import re
+import time
 from typing import Any, AsyncGenerator, AsyncIterable, Optional
 
 import orjson
@@ -37,6 +38,7 @@ from app.services.reverse.assets_list import AssetsListReverse
 
 _VIDEO_SEMAPHORE = None
 _VIDEO_SEM_VALUE = 0
+
 
 def _get_video_semaphore() -> asyncio.Semaphore:
     """Reverse 接口并发控制（video 服务）。"""
@@ -152,9 +154,7 @@ class VideoService:
         # 英文泛化短句：please animate this / please generate a video
         if re.fullmatch(r"(please\s+)?animate(\s+this(\s+image)?)?", text):
             return False
-        if re.fullmatch(
-            r"(please\s+)?(make|create|generate)\s+(a\s+)?video", text
-        ):
+        if re.fullmatch(r"(please\s+)?(make|create|generate)\s+(a\s+)?video", text):
             return False
 
         # 中文泛化短句：请让它动起来 / 帮我生成视频 / 把这张图做成视频
@@ -262,7 +262,9 @@ class VideoService:
             msg, code, status = _classify_video_error(e)
             raise AppException(
                 message=msg,
-                error_type=ErrorType.SERVER.value if status >= 500 else ErrorType.INVALID_REQUEST.value,
+                error_type=ErrorType.SERVER.value
+                if status >= 500
+                else ErrorType.INVALID_REQUEST.value,
                 code=code,
                 status_code=status,
             )
@@ -286,7 +288,9 @@ class VideoService:
         token_tag = _token_tag(token)
         # 确定逻辑上的 mode
         is_custom = VideoService.is_meaningful_video_prompt(prompt)
-        official_mode = "custom" if is_custom else VideoService._map_preset_to_mode(preset)
+        official_mode = (
+            "custom" if is_custom else VideoService._map_preset_to_mode(preset)
+        )
 
         logger.info(
             f"Video generation: token={token_tag}, prompt='{prompt[:50]}...', ratio={aspect_ratio}, length={video_length}s, mode={official_mode}"
@@ -350,7 +354,9 @@ class VideoService:
                     msg, code, status = _classify_video_error(e)
                     raise AppException(
                         message=msg,
-                        error_type=ErrorType.SERVER.value if status >= 500 else ErrorType.INVALID_REQUEST.value,
+                        error_type=ErrorType.SERVER.value
+                        if status >= 500
+                        else ErrorType.INVALID_REQUEST.value,
                         code=code,
                         status_code=status,
                     )
@@ -376,7 +382,9 @@ class VideoService:
         token_tag = _token_tag(token)
         # 确定逻辑上的 mode
         is_custom = VideoService.is_meaningful_video_prompt(prompt)
-        official_mode = "custom" if is_custom else VideoService._map_preset_to_mode(preset)
+        official_mode = (
+            "custom" if is_custom else VideoService._map_preset_to_mode(preset)
+        )
 
         logger.info(
             f"Image to video: token={token_tag}, prompt='{prompt[:50]}...', image={image_url[:80]}, mode={official_mode}"
@@ -444,7 +452,9 @@ class VideoService:
                     msg, code, status = _classify_video_error(e)
                     raise AppException(
                         message=msg,
-                        error_type=ErrorType.SERVER.value if status >= 500 else ErrorType.INVALID_REQUEST.value,
+                        error_type=ErrorType.SERVER.value
+                        if status >= 500
+                        else ErrorType.INVALID_REQUEST.value,
                         code=code,
                         status_code=status,
                     )
@@ -485,7 +495,9 @@ class VideoService:
         # 对齐官网全链路：先创建 IMAGE 类型 media post，再触发 conversations/new。
         # 注意：videoGenModelConfig.parentPostId 仍使用 imagine 的 image_id。
         try:
-            created_image_post_id = await self.create_image_post(token, source_image_url)
+            created_image_post_id = await self.create_image_post(
+                token, source_image_url
+            )
             logger.info(
                 "ParentPost pre-create media post done: "
                 f"parent_post_id={parent_post_id}, image_post_id={created_image_post_id}, "
@@ -517,7 +529,9 @@ class VideoService:
 
         # 确定逻辑上的 mode
         is_custom = VideoService.is_meaningful_video_prompt(prompt)
-        official_mode = "custom" if is_custom else VideoService._map_preset_to_mode(preset)
+        official_mode = (
+            "custom" if is_custom else VideoService._map_preset_to_mode(preset)
+        )
 
         logger.info(
             "ParentPost video request prepared: "
@@ -571,7 +585,9 @@ class VideoService:
                     msg, code, status = _classify_video_error(e)
                     raise AppException(
                         message=msg,
-                        error_type=ErrorType.SERVER.value if status >= 500 else ErrorType.INVALID_REQUEST.value,
+                        error_type=ErrorType.SERVER.value
+                        if status >= 500
+                        else ErrorType.INVALID_REQUEST.value,
                         code=code,
                         status_code=status,
                     )
@@ -609,7 +625,9 @@ class VideoService:
             prompt_text = ""
 
         effective_original = (original_post_id or "").strip() or extend_post_id
-        effective_file_attachment = (file_attachment_id or "").strip() or effective_original
+        effective_file_attachment = (
+            file_attachment_id or ""
+        ).strip() or effective_original
 
         logger.info(
             "Video extension request: "
@@ -709,7 +727,9 @@ class VideoService:
                     msg, code, status = _classify_video_error(e)
                     raise AppException(
                         message=msg,
-                        error_type=ErrorType.SERVER.value if status >= 500 else ErrorType.INVALID_REQUEST.value,
+                        error_type=ErrorType.SERVER.value
+                        if status >= 500
+                        else ErrorType.INVALID_REQUEST.value,
                         code=code,
                         status_code=status,
                     )
@@ -765,13 +785,14 @@ class VideoService:
 
         # [NEW] 尝试通过 extend_post_id 或者 parent_post_id 获取强绑定的 token
         from app.services.grok.utils.asset_token_map import AssetTokenMap
+
         token_map = await AssetTokenMap.get_instance()
         bound_token = None
         if extend_post_id:
             bound_token = await token_map.get_token(extend_post_id)
         elif parent_post_id:
             bound_token = await token_map.get_token(parent_post_id)
-            
+
         if bound_token:
             preferred_token = bound_token
 
@@ -928,7 +949,9 @@ class VideoService:
                 msg, code, status = _classify_video_error(e)
                 raise AppException(
                     message=msg,
-                    error_type=ErrorType.SERVER.value if status >= 500 else ErrorType.INVALID_REQUEST.value,
+                    error_type=ErrorType.SERVER.value
+                    if status >= 500
+                    else ErrorType.INVALID_REQUEST.value,
                     code=code,
                     status_code=status,
                 )
@@ -1073,11 +1096,16 @@ class VideoStreamProcessor(BaseProcessor):
                     if progress == 100:
                         video_url = video_resp.get("videoUrl", "")
                         thumbnail_url = video_resp.get("thumbnailImageUrl", "")
-                        
+
                         # [NEW] 记录生成的视频对应的 postId 与 token 以备延长
-                        video_post_id = video_resp.get("videoPostId") or self._extract_video_id(video_url)
+                        video_post_id = video_resp.get(
+                            "videoPostId"
+                        ) or self._extract_video_id(video_url)
                         if video_post_id and self.token:
-                            from app.services.grok.utils.asset_token_map import AssetTokenMap
+                            from app.services.grok.utils.asset_token_map import (
+                                AssetTokenMap,
+                            )
+
                             token_map = await AssetTokenMap.get_instance()
                             await token_map.save_mapping(video_post_id, self.token)
 
@@ -1089,13 +1117,27 @@ class VideoStreamProcessor(BaseProcessor):
                             if self.upscale_on_finish:
                                 yield self._sse("正在对视频进行超分辨率\n")
                                 video_url = await self._upscale_video_url(video_url)
+                            render_started_at = time.perf_counter()
+                            logger.info(
+                                f"Video render pipeline started: video_url={video_url}, "
+                                f"thumbnail_url={thumbnail_url or '-'}, post_id={video_post_id or '-'}"
+                            )
                             dl_service = self._get_dl()
                             rendered = await dl_service.render_video(
                                 video_url, self.token, thumbnail_url
                             )
+                            render_duration_ms = (
+                                time.perf_counter() - render_started_at
+                            ) * 1000
+                            logger.info(
+                                f"Video render pipeline completed: rendered={rendered}, "
+                                f"post_id={video_post_id or '-'}, duration_ms={render_duration_ms:.2f}"
+                            )
                             yield self._sse(rendered)
 
-                            logger.info(f"Video generated: {video_url} (post_id={video_post_id})")
+                            logger.info(
+                                f"Video generated: {video_url} (post_id={video_post_id})"
+                            )
                     continue
 
             if self.think_opened:
@@ -1106,7 +1148,7 @@ class VideoStreamProcessor(BaseProcessor):
             logger.debug(
                 "Video stream cancelled by client", extra={"model": self.model}
             )
-        except StreamIdleTimeoutError as e:
+        except StreamIdleTimeoutError:
             raise AppException(
                 message="视频生成失败：网络连接异常，请稍后重试",
                 error_type=ErrorType.SERVER.value,
@@ -1141,7 +1183,9 @@ class VideoStreamProcessor(BaseProcessor):
             msg, code, status = _classify_video_error(e)
             raise AppException(
                 message=msg,
-                error_type=ErrorType.SERVER.value if status >= 500 else ErrorType.INVALID_REQUEST.value,
+                error_type=ErrorType.SERVER.value
+                if status >= 500
+                else ErrorType.INVALID_REQUEST.value,
                 code=code,
                 status_code=status,
             )
@@ -1221,7 +1265,9 @@ class VideoCollectProcessor(BaseProcessor):
                             session, self.token, params
                         )
                         data = response.json() if response is not None else {}
-                        assets = data.get("assets", []) if isinstance(data, dict) else []
+                        assets = (
+                            data.get("assets", []) if isinstance(data, dict) else []
+                        )
 
                         for asset in assets:
                             if not isinstance(asset, dict):
@@ -1234,12 +1280,19 @@ class VideoCollectProcessor(BaseProcessor):
                                 or marker in key
                                 or key.endswith(f"{asset_id}/content")
                             ):
-                                if mime_type.startswith("video/") or "generated_video" in key:
-                                    preview_key = str(asset.get("previewImageKey", "")).strip()
+                                if (
+                                    mime_type.startswith("video/")
+                                    or "generated_video" in key
+                                ):
+                                    preview_key = str(
+                                        asset.get("previewImageKey", "")
+                                    ).strip()
                                     if not preview_key:
                                         aux = asset.get("auxKeys") or {}
                                         if isinstance(aux, dict):
-                                            preview_key = str(aux.get("preview-image", "")).strip()
+                                            preview_key = str(
+                                                aux.get("preview-image", "")
+                                            ).strip()
                                     logger.info(
                                         "Video asset resolved by assets list: "
                                         f"asset_id={asset_id}, key={key}, preview={preview_key}"
@@ -1297,22 +1350,39 @@ class VideoCollectProcessor(BaseProcessor):
                         response_id = resp.get("responseId", "")
                         video_url = video_resp.get("videoUrl", "")
                         thumbnail_url = video_resp.get("thumbnailImageUrl", "")
-                        
+
                         # [NEW] 记录生成的视频对应的 postId 与 token 以备延长
                         if fallback_video_id and self.token:
-                            from app.services.grok.utils.asset_token_map import AssetTokenMap
+                            from app.services.grok.utils.asset_token_map import (
+                                AssetTokenMap,
+                            )
+
                             token_map = await AssetTokenMap.get_instance()
                             await token_map.save_mapping(fallback_video_id, self.token)
 
                         if video_url:
                             if self.upscale_on_finish:
                                 video_url = await self._upscale_video_url(video_url)
+                            render_started_at = time.perf_counter()
+                            logger.info(
+                                f"Video collect render started: video_url={video_url}, "
+                                f"thumbnail_url={thumbnail_url or '-'}, post_id={fallback_video_id or '-'}"
+                            )
                             dl_service = self._get_dl()
                             content = await dl_service.render_video(
                                 video_url, self.token, thumbnail_url
                             )
+                            render_duration_ms = (
+                                time.perf_counter() - render_started_at
+                            ) * 1000
+                            logger.info(
+                                f"Video collect render completed: content={content}, "
+                                f"post_id={fallback_video_id or '-'}, duration_ms={render_duration_ms:.2f}"
+                            )
                             self.video_post_id = fallback_video_id
-                            logger.info(f"Video generated: {video_url} (post_id={fallback_video_id})")
+                            logger.info(
+                                f"Video generated: {video_url} (post_id={fallback_video_id})"
+                            )
                 elif model_resp := resp.get("modelResponse"):
                     file_attachments = model_resp.get("fileAttachments", [])
                     if isinstance(file_attachments, list):
@@ -1365,9 +1435,6 @@ class VideoCollectProcessor(BaseProcessor):
         finally:
             await self.close()
 
-        # [NEW] 提取并包含 post_id
-        post_id = getattr(self, "video_post_id", fallback_video_id)
-
         if not content and fallback_video_id:
             asset_video_path, asset_thumb_path = await self._resolve_video_asset_path(
                 fallback_video_id
@@ -1375,9 +1442,19 @@ class VideoCollectProcessor(BaseProcessor):
             if asset_video_path:
                 if self.upscale_on_finish:
                     asset_video_path = await self._upscale_video_url(asset_video_path)
+                render_started_at = time.perf_counter()
+                logger.info(
+                    f"Video assets fallback render started: video_url={asset_video_path}, "
+                    f"thumbnail_url={(asset_thumb_path or fallback_thumb or '-')}, post_id={fallback_video_id}"
+                )
                 dl_service = self._get_dl()
                 content = await dl_service.render_video(
                     asset_video_path, self.token, asset_thumb_path or fallback_thumb
+                )
+                render_duration_ms = (time.perf_counter() - render_started_at) * 1000
+                logger.info(
+                    f"Video assets fallback render completed: content={content}, "
+                    f"post_id={fallback_video_id}, duration_ms={render_duration_ms:.2f}"
                 )
                 response_id = response_id or f"chatcmpl-{uuid.uuid4().hex[:24]}"
                 logger.info(
