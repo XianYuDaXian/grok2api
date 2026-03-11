@@ -35,10 +35,14 @@
   let availableModels = [];
   let activeStreamInfo = null;
   let sessionsData = null;
+  let followStreamScroll = true;
+  let suppressScrollTracking = false;
+  let userLockedStreamScroll = false;
   const feedbackUrl = 'https://github.com/chenyme/grok2api/issues/new';
   const STORAGE_KEY = 'grok2api_chat_sessions';
   const SIDEBAR_STATE_KEY = 'grok2api_chat_sidebar_collapsed';
   const MAX_CONTEXT_MESSAGES = 30;
+  const AUTO_SCROLL_THRESHOLD = 48;
   const DEFAULT_SESSION_TITLES = ['新会话', 'New Session'];
   const SEND_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"></path><path d="M22 2L15 22L11 13L2 9L22 2Z"></path></svg>';
   const STOP_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"></rect></svg>';
@@ -449,15 +453,44 @@
     }
   }
 
-  function scrollToBottom() {
+  function getScrollContainer() {
     const body = document.scrollingElement || document.documentElement;
-    if (!body) return;
+    if (!body) return null;
     const hasOwnScroll = chatLog && chatLog.scrollHeight > chatLog.clientHeight + 1;
-    if (hasOwnScroll) {
-      chatLog.scrollTop = chatLog.scrollHeight;
+    return hasOwnScroll ? chatLog : body;
+  }
+
+  function isNearScrollBottom() {
+    const container = getScrollContainer();
+    if (!container) return true;
+    const remaining = container.scrollHeight - (container.scrollTop + container.clientHeight);
+    return remaining <= AUTO_SCROLL_THRESHOLD;
+  }
+
+  function updateFollowStreamScroll() {
+    if (userLockedStreamScroll) {
+      followStreamScroll = false;
       return;
     }
-    body.scrollTop = body.scrollHeight;
+    followStreamScroll = isNearScrollBottom();
+  }
+
+  function lockStreamScrollFollow() {
+    if (!isSending) return;
+    userLockedStreamScroll = true;
+    followStreamScroll = false;
+  }
+
+  function scrollToBottom(force = false) {
+    const container = getScrollContainer();
+    if (!container) return;
+    if (!force && !followStreamScroll) return;
+    suppressScrollTracking = true;
+    container.scrollTop = container.scrollHeight;
+    requestAnimationFrame(() => {
+      suppressScrollTracking = false;
+      updateFollowStreamScroll();
+    });
   }
 
   function hideEmptyState() {
@@ -916,7 +949,7 @@
     row.appendChild(bubble);
 
     chatLog.appendChild(row);
-    scrollToBottom();
+    scrollToBottom(true);
     const entry = {
       row,
       contentNode,
@@ -962,7 +995,7 @@
     entry.contentNode.classList.add('rendered', 'user-rendered');
     entry.contentNode.innerHTML = parts.join('');
     bindMessageImagePreview(entry.contentNode);
-    scrollToBottom();
+    scrollToBottom(true);
   }
 
   function applyImageGrid(root) {
@@ -1114,11 +1147,20 @@
     if (!entry) return;
     entry.raw = content || '';
     if (!entry.contentNode) return;
+    const shouldPreserveScroll = isSending && !followStreamScroll;
+    const scrollContainer = shouldPreserveScroll ? getScrollContainer() : null;
+    const preservedScrollTop = scrollContainer ? scrollContainer.scrollTop : 0;
     const captureOpenState = (root, selector) => {
       if (!root || !root.querySelectorAll) return null;
       const nodes = Array.from(root.querySelectorAll(selector));
       if (!nodes.length) return null;
       return nodes.map((node) => node.hasAttribute('open'));
+    };
+    const captureScrollState = (root, selector) => {
+      if (!root || !root.querySelectorAll) return null;
+      const nodes = Array.from(root.querySelectorAll(selector));
+      if (!nodes.length) return null;
+      return nodes.map((node) => node.scrollTop || 0);
     };
     const restoreOpenState = (root, selector, states) => {
       if (!root || !root.querySelectorAll || !Array.isArray(states) || !states.length) return;
@@ -1132,9 +1174,20 @@
         }
       }
     };
+    const restoreScrollState = (root, selector, states) => {
+      if (!root || !root.querySelectorAll || !Array.isArray(states) || !states.length) return;
+      const nodes = Array.from(root.querySelectorAll(selector));
+      const max = Math.min(nodes.length, states.length);
+      for (let i = 0; i < max; i += 1) {
+        nodes[i].scrollTop = states[i] || 0;
+      }
+    };
     const savedThinkBlockState = captureOpenState(entry.contentNode, '.think-block');
     const savedThinkAgentState = captureOpenState(entry.contentNode, '.think-agent');
     const savedRolloutState = captureOpenState(entry.contentNode, '.think-rollout-group');
+    const savedThinkContentScroll = captureScrollState(entry.contentNode, '.think-content');
+    const savedThinkAgentItemsScroll = captureScrollState(entry.contentNode, '.think-agent-items');
+    const savedThinkRolloutBodyScroll = captureScrollState(entry.contentNode, '.think-rollout-body');
     if (!entry.hasThink && entry.raw.includes('<think>')) {
       entry.hasThink = true;
     }
@@ -1151,6 +1204,11 @@
     restoreOpenState(entry.contentNode, '.think-block', savedThinkBlockState);
     restoreOpenState(entry.contentNode, '.think-agent', savedThinkAgentState);
     restoreOpenState(entry.contentNode, '.think-rollout-group', savedRolloutState);
+    if (shouldPreserveScroll) {
+      restoreScrollState(entry.contentNode, '.think-content', savedThinkContentScroll);
+      restoreScrollState(entry.contentNode, '.think-agent-items', savedThinkAgentItemsScroll);
+      restoreScrollState(entry.contentNode, '.think-rollout-body', savedThinkRolloutBodyScroll);
+    }
     if (entry.hasThink) {
       if (finalize && (entry.thinkElapsed === null || typeof entry.thinkElapsed === 'undefined')) {
         entry.thinkElapsed = 0;
@@ -1165,12 +1223,22 @@
     if (entry.role === 'assistant') {
       bindCodeCopyButtons(entry.contentNode);
       const thinkNodes = entry.contentNode.querySelectorAll('.think-content');
-      thinkNodes.forEach((node) => {
-        node.scrollTop = node.scrollHeight;
-      });
+      if (!shouldPreserveScroll) {
+        thinkNodes.forEach((node) => {
+          node.scrollTop = node.scrollHeight;
+        });
+      }
       if (finalize && entry.row && !entry.row.querySelector('.message-actions')) {
         attachAssistantActions(entry);
       }
+    }
+    if (scrollContainer) {
+      suppressScrollTracking = true;
+      scrollContainer.scrollTop = preservedScrollTop;
+      requestAnimationFrame(() => {
+        suppressScrollTracking = false;
+      });
+      return;
     }
     scrollToBottom();
   }
@@ -1647,6 +1715,8 @@
     const assistantEntry = createMessage('assistant', '');
     setSendingState(true);
     setStatus('connecting', '发送中');
+    followStreamScroll = true;
+    userLockedStreamScroll = false;
 
     abortController = new AbortController();
     const payload = buildPayloadFrom(historySlice);
@@ -1735,6 +1805,8 @@
     const assistantEntry = createMessage('assistant', '');
     setSendingState(true);
     setStatus('connecting', '发送中');
+    followStreamScroll = true;
+    userLockedStreamScroll = false;
 
     abortController = new AbortController();
     const payload = buildPayload();
@@ -2091,6 +2163,27 @@
         event.preventDefault();
       });
     }
+
+    const handleScrollTracking = () => {
+      if (suppressScrollTracking) return;
+      if (isSending) {
+        lockStreamScrollFollow();
+        return;
+      }
+      updateFollowStreamScroll();
+    };
+    const handleUserScrollIntent = () => {
+      lockStreamScrollFollow();
+    };
+    if (chatLog) {
+      chatLog.addEventListener('scroll', handleScrollTracking, { passive: true });
+      chatLog.addEventListener('wheel', handleUserScrollIntent, { passive: true });
+      chatLog.addEventListener('touchmove', handleUserScrollIntent, { passive: true });
+      chatLog.addEventListener('pointerdown', handleUserScrollIntent, { passive: true });
+    }
+    window.addEventListener('scroll', handleScrollTracking, { passive: true });
+    window.addEventListener('wheel', handleUserScrollIntent, { passive: true });
+    window.addEventListener('touchmove', handleUserScrollIntent, { passive: true });
   }
 
   updateRangeValues();

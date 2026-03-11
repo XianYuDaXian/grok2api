@@ -423,10 +423,10 @@ body {
 }
 
 .think-block[open] .think-content {
-  max-height: 60vh;
+  max-height: none;
   opacity: 1;
-  overflow: auto;
-  padding-right: 4px;
+  overflow: visible;
+  padding-right: 0;
 }
 
 .img-grid {
@@ -564,6 +564,13 @@ body {
   flex-direction: column;
   gap: 10px;
   width: 100%;
+}
+
+.think-agent[open] .think-agent-items {
+  max-height: 36vh;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
 }
 
 .think-rollout-group {
