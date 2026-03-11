@@ -255,8 +255,8 @@ class TokenManager:
         根据视频需求智能选择 Token 池
 
         路由策略:
-        - 如果 resolution 是 "720p" 或 video_length > 6: 优先使用 "ssoSuper" 池
-        - 否则优先使用 "ssoBasic" 池
+        - 当前已放开视频规格限制，不再根据分辨率或时长强制要求 Super 池
+        - 默认优先使用 "ssoBasic" 池
         - 当提供 pool_candidates 时，按候选池顺序回退
 
         Args:
@@ -267,9 +267,9 @@ class TokenManager:
         Returns:
             TokenInfo 对象或 None（无可用 token）
         """
-        # 确定首选池
-        requires_super = resolution == "720p" or video_length > 6
-        primary_pool = SUPER_POOL_NAME if requires_super else BASIC_POOL_NAME
+        # 已放开视频规格限制：所有视频请求默认优先走 Basic，Super 仅作为回退池。
+        requires_super = False
+        primary_pool = BASIC_POOL_NAME
 
         if pool_candidates:
             ordered_pools = list(pool_candidates)
