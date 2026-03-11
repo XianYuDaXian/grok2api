@@ -73,17 +73,12 @@ def _migrate_deprecated_config(
         "grok.image_ws_final_min_bytes": "image.final_min_bytes",
         "grok.image_ws_medium_min_bytes": "image.medium_min_bytes",
         # legacy sections
-        "network.base_proxy_url": "proxy.base_proxy_url",
-        "network.asset_proxy_url": "proxy.asset_proxy_url",
         "network.timeout": [
             "chat.timeout",
             "image.timeout",
             "video.timeout",
             "voice.timeout",
         ],
-        "security.cf_clearance": "proxy.cf_clearance",
-        "security.browser": "proxy.browser",
-        "security.user_agent": "proxy.user_agent",
         "timeout.stream_idle_timeout": [
             "chat.stream_timeout",
             "image.stream_timeout",
@@ -139,9 +134,7 @@ def _migrate_deprecated_config(
                         f"Migrated config: {old_path} -> {new_path} = {old_value}"
                     )
                 except Exception as e:
-                    logger.warning(
-                        f"Skip config migration for {old_path}: {e}"
-                    )
+                    logger.warning(f"Skip config migration for {old_path}: {e}")
                     continue
             if isinstance(result.get(old_section), dict):
                 result[old_section].pop(old_key, None)

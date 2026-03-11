@@ -3,7 +3,6 @@ Grok image edit service.
 """
 
 import asyncio
-import random
 import re
 from dataclasses import dataclass
 from typing import AsyncGenerator, AsyncIterable, List, Union, Any, Callable
@@ -345,9 +344,7 @@ class ImageEditService:
             try:
                 image_ref = (source_image_url or "").strip()
                 if not image_ref:
-                    image_ref = (
-                        f"https://imagine-public.x.ai/imagine-public/images/{parent_post_id}.jpg"
-                    )
+                    image_ref = f"https://imagine-public.x.ai/imagine-public/images/{parent_post_id}.jpg"
                 effective_parent_post_id = parent_post_id
                 await self._emit_progress(
                     progress_cb,
@@ -461,7 +458,9 @@ class ImageEditService:
                         f"recorded usage (effort={effort.value})"
                     )
                 except Exception as e:
-                    logger.warning(f"Failed to record image edit(parentPostId) usage: {e}")
+                    logger.warning(
+                        f"Failed to record image edit(parentPostId) usage: {e}"
+                    )
                 return ImageEditResult(stream=False, data=images_out)
 
             except UpstreamException as e:

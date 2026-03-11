@@ -4,7 +4,6 @@
 
 import aiofiles.os
 from urllib.parse import unquote
-from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 

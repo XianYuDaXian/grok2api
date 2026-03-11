@@ -15,11 +15,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from curl_cffi.requests import AsyncSession
+from curl_cffi.requests import AsyncSession  # noqa: E402
 
-from app.core.config import config
-from app.services.reverse.rate_limits import RateLimitsReverse
-from app.services.token import get_token_manager
+from app.core.config import config  # noqa: E402
+from app.services.reverse.rate_limits import RateLimitsReverse  # noqa: E402
+from app.services.token import get_token_manager  # noqa: E402
 
 
 async def main() -> int:
