@@ -41,21 +41,21 @@ from app.api.v1.models import router as models_router  # noqa: E402
 from app.api.v1.response import router as responses_router  # noqa: E402
 from app.api.v1.video import router as videos_router  # noqa: E402
 from app.services.token import get_scheduler  # noqa: E402
-from app.api.v1.admin_api import router as admin_router
-from app.api.v1.public_api import router as public_router
-from app.api.v1.video_api import router as video_router
-from app.api.pages import router as pages_router
-from fastapi.staticfiles import StaticFiles
-
-# 初始化日志
-setup_logging(
-    level=os.getenv("LOG_LEVEL", "INFO"), json_console=False, file_logging=True
-)
+from app.api.v1.admin_api import router as admin_router  # noqa: E402
+from app.api.v1.public_api import router as public_router  # noqa: E402
+from app.api.v1.video_api import router as video_router  # noqa: E402
+from app.api.pages import router as pages_router  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
+    # 在 worker 启动阶段初始化日志，避免 Granian 下模块导入时绑定的标准流失效。
+    setup_logging(
+        level=os.getenv("LOG_LEVEL", "INFO"), json_console=False, file_logging=True
+    )
+
     # 1. 注册服务默认配置
     from app.core.config import config, register_defaults
     from app.services.grok.defaults import get_grok_defaults
@@ -83,16 +83,19 @@ async def lifespan(app: FastAPI):
     #    环境变量 FLARESOLVERR_URL 会作为初始值写入配置（兼容旧部署方式）
     _flaresolverr_env = os.getenv("FLARESOLVERR_URL", "")
     if _flaresolverr_env and not get_config("proxy.flaresolverr_url"):
-        await config.update({
-            "proxy": {
-                "enabled": True,
-                "flaresolverr_url": _flaresolverr_env,
-                "refresh_interval": int(os.getenv("CF_REFRESH_INTERVAL", "600")),
-                "timeout": int(os.getenv("CF_TIMEOUT", "60")),
+        await config.update(
+            {
+                "proxy": {
+                    "enabled": True,
+                    "flaresolverr_url": _flaresolverr_env,
+                    "refresh_interval": int(os.getenv("CF_REFRESH_INTERVAL", "600")),
+                    "timeout": int(os.getenv("CF_TIMEOUT", "60")),
+                }
             }
-        })
+        )
 
     from app.services.cf_refresh import start as cf_refresh_start
+
     cf_refresh_start()
 
     logger.info("Application startup complete.")
@@ -102,6 +105,7 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down Grok2API...")
 
     from app.services.cf_refresh import stop as cf_refresh_stop
+
     cf_refresh_stop()
 
     from app.core.storage import StorageFactory
@@ -153,9 +157,7 @@ def create_app() -> FastAPI:
         responses_router, prefix="/v1", dependencies=[Depends(verify_api_key)]
     )
     # 兼容部分客户端直接请求 /responses（不带 /v1）
-    app.include_router(
-        responses_router, dependencies=[Depends(verify_api_key)]
-    )
+    app.include_router(responses_router, dependencies=[Depends(verify_api_key)])
     app.include_router(
         videos_router, prefix="/v1", dependencies=[Depends(verify_api_key)]
     )
@@ -184,8 +186,10 @@ if __name__ == "__main__":
     print("推荐使用 Granian 命令行启动服务，例如：")
     print("granian --interface asgi --host 0.0.0.0 --port 8000 main:app")
     print("\n或者使用内置脚本：python scripts/run.py")
-    
+
     import argparse
+    import uvicorn
+
     parser = argparse.ArgumentParser(description="启动 Grok2API 服务")
     parser.add_argument(
         "--host",

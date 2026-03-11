@@ -110,17 +110,19 @@ def setup_logging(
     # 控制台输出
     if json_console:
         logger.add(
-            _make_json_sink(sys.stdout),
+            _make_json_sink(sys.stderr),
             level=level,
             format="{message}",
             colorize=False,
+            enqueue=True,
         )
     else:
         logger.add(
-            sys.stdout,
+            sys.stderr,
             level=level,
             format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{file.name}:{line}</cyan> - <level>{message}</level>",
             colorize=True,
+            enqueue=True,
         )
 
     # 文件输出
