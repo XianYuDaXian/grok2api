@@ -36,7 +36,7 @@ def build_tool_prompt(
     lines = [
         "# Available Tools",
         "",
-        "You have access to the following tools. To call a tool, output a <tool_call> block with a JSON object containing \"name\" and \"arguments\".",
+        'You have access to the following tools. To call a tool, output a <tool_call> block with a JSON object containing "name" and "arguments".',
         "",
         "Format:",
         "<tool_call>",
@@ -46,7 +46,9 @@ def build_tool_prompt(
     ]
 
     if parallel_tool_calls:
-        lines.append("You may make multiple tool calls in a single response by using multiple <tool_call> blocks.")
+        lines.append(
+            "You may make multiple tool calls in a single response by using multiple <tool_call> blocks."
+        )
         lines.append("")
 
     # Describe each tool
@@ -69,18 +71,26 @@ def build_tool_prompt(
 
     # Handle tool_choice directives
     if tool_choice == "required":
-        lines.append("IMPORTANT: You MUST call at least one tool in your response. Do not respond with only text.")
+        lines.append(
+            "IMPORTANT: You MUST call at least one tool in your response. Do not respond with only text."
+        )
     elif isinstance(tool_choice, dict):
         func_info = tool_choice.get("function", {})
         forced_name = func_info.get("name", "")
         if forced_name:
-            lines.append(f"IMPORTANT: You MUST call the tool \"{forced_name}\" in your response.")
+            lines.append(
+                f'IMPORTANT: You MUST call the tool "{forced_name}" in your response.'
+            )
     else:
         # "auto" or default
-        lines.append("Decide whether to call a tool based on the user's request. If you don't need a tool, respond normally with text only.")
+        lines.append(
+            "Decide whether to call a tool based on the user's request. If you don't need a tool, respond normally with text only."
+        )
 
     lines.append("")
-    lines.append("When you call a tool, you may include text before or after the <tool_call> blocks, but the tool call blocks must be valid JSON.")
+    lines.append(
+        "When you call a tool, you may include text before or after the <tool_call> blocks, but the tool call blocks must be valid JSON."
+    )
 
     return "\n".join(lines)
 
@@ -246,7 +256,7 @@ def parse_tool_calls(
     text_parts = []
     last_end = 0
     for match in matches:
-        before = content[last_end:match.start()]
+        before = content[last_end : match.start()]
         if before.strip():
             text_parts.append(before.strip())
         last_end = match.end()
@@ -288,22 +298,33 @@ def format_tool_history(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 func = tc.get("function", {})
                 tc_name = func.get("name", "")
                 tc_args = func.get("arguments", "{}")
-                tc_id = tc.get("id", "")
-                parts.append(f'<tool_call>{{"name":"{tc_name}","arguments":{tc_args}}}</tool_call>')
-            result.append({
-                "role": "assistant",
-                "content": "\n".join(parts),
-            })
+                parts.append(
+                    f'<tool_call>{{"name":"{tc_name}","arguments":{tc_args}}}</tool_call>'
+                )
+            result.append(
+                {
+                    "role": "assistant",
+                    "content": "\n".join(parts),
+                }
+            )
 
         elif role == "tool":
             # Convert tool result to text format
             tool_name = name or "unknown"
             call_id = tool_call_id or ""
-            content_str = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False) if content else ""
-            result.append({
-                "role": "user",
-                "content": f"tool ({tool_name}, {call_id}): {content_str}",
-            })
+            content_str = (
+                content
+                if isinstance(content, str)
+                else json.dumps(content, ensure_ascii=False)
+                if content
+                else ""
+            )
+            result.append(
+                {
+                    "role": "user",
+                    "content": f"tool ({tool_name}, {call_id}): {content_str}",
+                }
+            )
 
         else:
             result.append(msg)

@@ -27,7 +27,10 @@ class MessageItem(BaseModel):
     """消息项"""
 
     role: str
-    content: Union[str, List[Dict[str, Any]]]
+    content: Optional[Union[str, Dict[str, Any], List[Dict[str, Any]]]]
+    tool_calls: Optional[List[Dict[str, Any]]] = None
+    tool_call_id: Optional[str] = None
+    name: Optional[str] = None
 
 
 class VideoConfig(BaseModel):
@@ -62,12 +65,16 @@ class ChatCompletionRequest(BaseModel):
     video_config: Optional[VideoConfig] = Field(None, description="视频生成参数")
     # 图片生成配置
     image_config: Optional[ImageConfig] = Field(None, description="图片生成参数")
+    # Tool calling
+    tools: Optional[List[Dict[str, Any]]] = Field(None, description="Tool definitions")
+    tool_choice: Optional[Union[str, Dict[str, Any]]] = Field(None, description="Tool choice: auto/required/none/specific")
+    parallel_tool_calls: Optional[bool] = Field(True, description="Allow parallel tool calls")
     # 兼容 Vercel AI SDK 等 provider-specific 扩展参数
     provider_options: Optional[Dict[str, Any]] = Field(None, description="Provider-specific options")
     providerOptions: Optional[Dict[str, Any]] = Field(None, description="Provider-specific options (camelCase)")
 
 
-VALID_ROLES = {"developer", "system", "user", "assistant"}
+VALID_ROLES = {"developer", "system", "user", "assistant", "tool"}
 USER_CONTENT_TYPES = {"text", "image_url", "input_audio", "file"}
 ALLOWED_IMAGE_SIZES = {
     "1280x720",
@@ -352,6 +359,10 @@ def validate_request(request: ChatCompletionRequest):
                     code="empty_content",
                 )
 
+        elif isinstance(content, dict):
+            msg.content = [content]
+            content = msg.content
+
         # 列表内容
         elif isinstance(content, list):
             if not content:
@@ -462,9 +473,11 @@ def validate_request(request: ChatCompletionRequest):
                         "file.file_data",
                         f"messages.{idx}.content.{block_idx}.file.file_data",
                     )
-        else:
+        elif content is None and msg.role == "tool":
+            pass
+        elif not isinstance(content, list):
             raise ValidationException(
-                message="Message content must be a string or array",
+                message="Message content must be a string, object, or array",
                 param=f"messages.{idx}.content",
                 code="invalid_content",
             )
@@ -967,6 +980,11 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
             reasoning_effort=request.reasoning_effort,
             temperature=request.temperature,
             top_p=request.top_p,
+            tools=request.tools,
+            tool_choice=request.tool_choice,
+            parallel_tool_calls=(
+                True if request.parallel_tool_calls is None else request.parallel_tool_calls
+            ),
         )
 
     if isinstance(result, dict):

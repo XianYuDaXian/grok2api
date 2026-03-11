@@ -699,15 +699,19 @@ class ResponsesService:
             "model": model,
             "messages": messages,
             "stream": stream,
-            "reasoning_effort": reasoning_effort,
         }
         if temperature is not None:
             chat_kwargs["temperature"] = temperature
         if top_p is not None:
             chat_kwargs["top_p"] = top_p
-        # 当前分支 ChatService.completions 尚未开放 tools/tool_choice/parallel_tool_calls 参数，
-        # 此处先做兼容降级：Responses 接口可用，工具字段保留在响应对象中但不透传到底层。
-        _ = normalized_tools, normalized_tool_choice, parallel_tool_calls
+        if normalized_tools is not None:
+            chat_kwargs["tools"] = normalized_tools
+        if normalized_tool_choice is not None:
+            chat_kwargs["tool_choice"] = normalized_tool_choice
+        if parallel_tool_calls is not None:
+            chat_kwargs["parallel_tool_calls"] = parallel_tool_calls
+        if reasoning_effort is not None:
+            chat_kwargs["reasoning_effort"] = reasoning_effort
 
         result = await ChatService.completions(**chat_kwargs)
 

@@ -1,4 +1,4 @@
-﻿"""
+"""
 Grok Chat 服务
 """
 
@@ -27,6 +27,12 @@ from app.services.grok.utils.retry import pick_token, rate_limited
 from app.services.reverse.app_chat import AppChatReverse
 from app.services.grok.utils.stream import wrap_stream_with_usage
 from app.services.token import get_token_manager, EffortType
+from app.services.grok.utils.tool_call import (
+    build_tool_prompt,
+    parse_tool_calls,
+    parse_tool_call_block,
+    format_tool_history,
+)
 
 
 _CHAT_SEMAPHORE = None
@@ -102,8 +108,16 @@ class MessageExtractor:
     """消息内容提取器"""
 
     @staticmethod
-    def extract(messages: List[Dict[str, Any]]) -> tuple[str, List[str], List[str]]:
+    def extract(
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]] = None,
+        tool_choice: Any = None,
+        parallel_tool_calls: bool = True,
+    ) -> tuple[str, List[str], List[str]]:
         """从 OpenAI 消息格式提取内容，返回 (text, file_attachments, image_attachments)"""
+        if tools:
+            messages = format_tool_history(messages)
+
         texts = []
         file_attachments: List[str] = []
         image_attachments: List[str] = []
@@ -117,6 +131,34 @@ class MessageExtractor:
             if isinstance(content, str):
                 if content.strip():
                     parts.append(content)
+            elif isinstance(content, dict):
+                content = [content]
+                for item in content:
+                    if not isinstance(item, dict):
+                        continue
+                    item_type = item.get("type", "")
+
+                    if item_type == "text":
+                        if text := item.get("text", "").strip():
+                            parts.append(text)
+
+                    elif item_type == "image_url":
+                        image_data = item.get("image_url", {})
+                        url = image_data.get("url", "")
+                        if url:
+                            image_attachments.append(url)
+
+                    elif item_type == "input_audio":
+                        audio_data = item.get("input_audio", {})
+                        data = audio_data.get("data", "")
+                        if data:
+                            file_attachments.append(data)
+
+                    elif item_type == "file":
+                        file_data = item.get("file", {})
+                        raw = file_data.get("file_data", "")
+                        if raw:
+                            file_attachments.append(raw)
             elif isinstance(content, list):
                 for item in content:
                     item_type = item.get("type", "")
@@ -143,8 +185,36 @@ class MessageExtractor:
                         if raw:
                             file_attachments.append(raw)
 
+            tool_calls = msg.get("tool_calls")
+            if role == "assistant" and not parts and isinstance(tool_calls, list):
+                for call in tool_calls:
+                    if not isinstance(call, dict):
+                        continue
+                    fn = call.get("function", {})
+                    if not isinstance(fn, dict):
+                        fn = {}
+                    name = fn.get("name") or call.get("name") or "tool"
+                    arguments = fn.get("arguments", "")
+                    if isinstance(arguments, (dict, list)):
+                        try:
+                            arguments = orjson.dumps(arguments).decode()
+                        except Exception:
+                            arguments = str(arguments)
+                    if not isinstance(arguments, str):
+                        arguments = str(arguments)
+                    arguments = arguments.strip()
+                    parts.append(f"[tool_call] {name} {arguments}".strip())
+
             if parts:
-                extracted.append({"role": role, "text": "\n".join(parts)})
+                role_label = role
+                if role == "tool":
+                    name = msg.get("name")
+                    call_id = msg.get("tool_call_id")
+                    if isinstance(name, str) and name.strip():
+                        role_label = f"tool[{name.strip()}]"
+                    if isinstance(call_id, str) and call_id.strip():
+                        role_label = f"{role_label}#{call_id.strip()}"
+                extracted.append({"role": role_label, "text": "\n".join(parts)})
 
         # 找到最后一条 user 消息
         last_user_index = next(
@@ -161,7 +231,17 @@ class MessageExtractor:
             text = item["text"]
             texts.append(text if i == last_user_index else f"{role}: {text}")
 
-        return "\n\n".join(texts), file_attachments, image_attachments
+        combined = "\n\n".join(texts)
+
+        if (not combined.strip()) and (file_attachments or image_attachments):
+            combined = "Refer to the following content:"
+
+        if tools:
+            tool_prompt = build_tool_prompt(tools, tool_choice, parallel_tool_calls)
+            if tool_prompt:
+                combined = f"{tool_prompt}\n\n{combined}"
+
+        return combined, file_attachments, image_attachments
 
 
 class GrokChatService:
@@ -235,6 +315,9 @@ class GrokChatService:
         reasoning_effort: str | None = None,
         temperature: float = 0.8,
         top_p: float = 0.95,
+        tools: List[Dict[str, Any]] = None,
+        tool_choice: Any = None,
+        parallel_tool_calls: bool = True,
     ):
         """OpenAI 兼容接口"""
         model_info = ModelService.get(model)
@@ -244,7 +327,12 @@ class GrokChatService:
         grok_model = model_info.grok_model
         mode = model_info.model_mode
         # 提取消息和附件
-        message, file_attachments, image_attachments = MessageExtractor.extract(messages)
+        message, file_attachments, image_attachments = MessageExtractor.extract(
+            messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            parallel_tool_calls=parallel_tool_calls,
+        )
         if not (message or "").strip() and (file_attachments or image_attachments):
             # 对齐官网行为：仅附件时仍发送非空 message，避免上游 400
             message = "参考以下内容："
@@ -282,12 +370,6 @@ class GrokChatService:
         if reasoning_effort is not None:
             model_config_override["reasoningEffort"] = reasoning_effort
 
-        # Passthrough mode: build tool_overrides for Grok API
-        tool_overrides_payload = None
-        # We need to extract tools from some upper context if passed, but since the upstream
-        # signature changed, we will just patch it carefully.
-        # Since this is a partial restore, we initialize to None and just pass it.
-
         response = await self.chat(
             token=token,
             message=message,
@@ -296,7 +378,7 @@ class GrokChatService:
             mode=mode,
             stream=stream,
             file_attachments=all_attachments,
-            tool_overrides=tool_overrides_payload,
+            tool_overrides=None,
             model_config_override=model_config_override,
         )
 
@@ -314,6 +396,9 @@ class ChatService:
         reasoning_effort: str | None = None,
         temperature: float = 0.8,
         top_p: float = 0.95,
+        tools: List[Dict[str, Any]] = None,
+        tool_choice: Any = None,
+        parallel_tool_calls: bool = True,
     ):
         """Chat Completions 入口"""
         # 获取 token
@@ -358,19 +443,33 @@ class ChatService:
                     reasoning_effort=reasoning_effort,
                     temperature=temperature,
                     top_p=top_p,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    parallel_tool_calls=parallel_tool_calls,
                 )
 
                 # 处理响应
                 if is_stream:
                     logger.debug(f"Processing stream response: model={model}")
-                    processor = StreamProcessor(model_name, token, show_think)
+                    processor = StreamProcessor(
+                        model_name,
+                        token,
+                        show_think,
+                        tools=tools,
+                        tool_choice=tool_choice,
+                    )
                     return wrap_stream_with_usage(
                         processor.process(response), token_mgr, token, model
                     )
 
                 # 非流式
                 logger.debug(f"Processing non-stream response: model={model}")
-                result = await CollectProcessor(model_name, token).process(response)
+                result = await CollectProcessor(
+                    model_name,
+                    token,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                ).process(response)
                 try:
                     model_info = ModelService.get(model)
                     effort = (
@@ -413,7 +512,14 @@ class ChatService:
 class StreamProcessor(proc_base.BaseProcessor):
     """Stream response processor."""
 
-    def __init__(self, model: str, token: str = "", show_think: bool = None):
+    def __init__(
+        self,
+        model: str,
+        token: str = "",
+        show_think: bool = None,
+        tools: List[Dict[str, Any]] = None,
+        tool_choice: Any = None,
+    ):
         super().__init__(model, token)
         self.response_id: str = None
         self.rollout_id: str = ""
@@ -424,13 +530,19 @@ class StreamProcessor(proc_base.BaseProcessor):
         self.answer_buffer: list[str] = []
         self.role_sent: bool = False
         self.filter_tags = get_config("app.filter_tags")
-        self.tool_usage_enabled = (
-            "xai:tool_usage_card" in (self.filter_tags or [])
-        )
+        self.tool_usage_enabled = "xai:tool_usage_card" in (self.filter_tags or [])
         self._tool_usage_opened = False
         self._tool_usage_buffer = ""
 
         self.show_think = bool(show_think)
+        self.tools = tools
+        self.tool_choice = tool_choice
+        self._tool_stream_enabled = bool(tools) and tool_choice != "none"
+        self._tool_state = "text"
+        self._tool_buffer = ""
+        self._tool_partial = ""
+        self._tool_calls_seen = False
+        self._tool_call_index = 0
 
     def _filter_tool_card(self, token: str) -> str:
         if not token or not self.tool_usage_enabled:
@@ -505,12 +617,104 @@ class StreamProcessor(proc_base.BaseProcessor):
 
         return token
 
-    def _sse(self, content: str = "", role: str = None, finish: str = None) -> str:
+    def _with_tool_index(self, tool_call: Dict[str, Any]) -> Dict[str, Any]:
+        tool_call = dict(tool_call or {})
+        tool_call["index"] = self._tool_call_index
+        self._tool_call_index += 1
+        return tool_call
+
+    @staticmethod
+    def _suffix_prefix(text: str, marker: str) -> int:
+        if not text or not marker:
+            return 0
+        max_len = min(len(text), len(marker) - 1)
+        for keep in range(max_len, 0, -1):
+            if text.endswith(marker[:keep]):
+                return keep
+        return 0
+
+    def _handle_tool_stream(self, chunk: str) -> list[tuple[str, Any]]:
+        if not chunk:
+            return []
+
+        start_tag = "<tool_call>"
+        end_tag = "</tool_call>"
+        events: list[tuple[str, Any]] = []
+        data = f"{self._tool_partial}{chunk}"
+        self._tool_partial = ""
+
+        while data:
+            if self._tool_state == "text":
+                start_idx = data.find(start_tag)
+                if start_idx == -1:
+                    keep = self._suffix_prefix(data, start_tag)
+                    emit = data[:-keep] if keep else data
+                    if emit:
+                        events.append(("text", emit))
+                    self._tool_partial = data[-keep:] if keep else ""
+                    break
+
+                before = data[:start_idx]
+                if before:
+                    events.append(("text", before))
+                data = data[start_idx + len(start_tag) :]
+                self._tool_state = "tool"
+                continue
+
+            end_idx = data.find(end_tag)
+            if end_idx == -1:
+                keep = self._suffix_prefix(data, end_tag)
+                append = data[:-keep] if keep else data
+                if append:
+                    self._tool_buffer += append
+                self._tool_partial = data[-keep:] if keep else ""
+                break
+
+            self._tool_buffer += data[:end_idx]
+            data = data[end_idx + len(end_tag) :]
+            tool_call = parse_tool_call_block(self._tool_buffer, self.tools)
+            if tool_call:
+                events.append(("tool", self._with_tool_index(tool_call)))
+                self._tool_calls_seen = True
+            self._tool_buffer = ""
+            self._tool_state = "text"
+
+        return events
+
+    def _flush_tool_stream(self) -> list[tuple[str, Any]]:
+        events: list[tuple[str, Any]] = []
+        if self._tool_state == "text":
+            if self._tool_partial:
+                events.append(("text", self._tool_partial))
+                self._tool_partial = ""
+            return events
+
+        raw = f"{self._tool_buffer}{self._tool_partial}"
+        tool_call = parse_tool_call_block(raw, self.tools)
+        if tool_call:
+            events.append(("tool", self._with_tool_index(tool_call)))
+            self._tool_calls_seen = True
+        elif raw:
+            events.append(("text", f"<tool_call>{raw}"))
+        self._tool_buffer = ""
+        self._tool_partial = ""
+        self._tool_state = "text"
+        return events
+
+    def _sse(
+        self,
+        content: str = "",
+        role: str = None,
+        finish: str = None,
+        tool_calls: list = None,
+    ) -> str:
         """Build SSE response."""
         delta = {}
         if role:
             delta["role"] = role
             delta["content"] = ""
+        elif tool_calls is not None:
+            delta["tool_calls"] = tool_calls
         elif content:
             delta["content"] = content
 
@@ -526,9 +730,11 @@ class StreamProcessor(proc_base.BaseProcessor):
         }
         return f"data: {orjson.dumps(chunk).decode()}\n\n"
 
-    async def process(self, response: AsyncIterable[bytes]) -> AsyncGenerator[str, None]:
+    async def process(
+        self, response: AsyncIterable[bytes]
+    ) -> AsyncGenerator[str, None]:
         """Process stream response.
-        
+
         Args:
             response: AsyncIterable[bytes], async iterable of bytes
 
@@ -576,9 +782,7 @@ class StreamProcessor(proc_base.BaseProcessor):
                     self.seen_think_once = True
                     idx = img.get("imageIndex", 0) + 1
                     progress = img.get("progress", 0)
-                    yield self._sse(
-                        f"正在生成第{idx}张图片中，当前进度{progress}%\n"
-                    )
+                    yield self._sse(f"正在生成第{idx}张图片中，当前进度{progress}%\n")
                     continue
 
                 if mr := resp.get("modelResponse"):
@@ -629,10 +833,7 @@ class StreamProcessor(proc_base.BaseProcessor):
                     filtered = re.sub(r"</?think>", "", filtered, flags=re.IGNORECASE)
                     if not filtered:
                         continue
-                    in_think = (
-                        is_thinking
-                        or self.image_think_active
-                    )
+                    in_think = is_thinking or self.image_think_active
                     if in_think:
                         if not self.show_think:
                             continue
@@ -648,15 +849,47 @@ class StreamProcessor(proc_base.BaseProcessor):
                         self.answer_buffer.append(filtered)
                         continue
 
+                    if self._tool_stream_enabled:
+                        for kind, payload in self._handle_tool_stream(filtered):
+                            if kind == "text":
+                                yield self._sse(payload)
+                            elif kind == "tool":
+                                yield self._sse(tool_calls=[payload])
+                        continue
+
                     yield self._sse(filtered)
 
             if self.think_opened:
                 yield self._sse("</think>\n")
                 self.think_opened = False
             if self.answer_buffer:
-                yield self._sse("".join(self.answer_buffer))
+                buffered = "".join(self.answer_buffer)
+                if self._tool_stream_enabled:
+                    for kind, payload in self._handle_tool_stream(buffered):
+                        if kind == "text":
+                            yield self._sse(payload)
+                        elif kind == "tool":
+                            yield self._sse(tool_calls=[payload])
+                    for kind, payload in self._flush_tool_stream():
+                        if kind == "text":
+                            yield self._sse(payload)
+                        elif kind == "tool":
+                            yield self._sse(tool_calls=[payload])
+                else:
+                    yield self._sse(buffered)
                 self.answer_buffer = []
-            yield self._sse(finish="stop")
+            if self._tool_stream_enabled and not self.answer_buffer:
+                for kind, payload in self._flush_tool_stream():
+                    if kind == "text":
+                        yield self._sse(payload)
+                    elif kind == "tool":
+                        yield self._sse(tool_calls=[payload])
+            finish_reason = (
+                "tool_calls"
+                if self._tool_stream_enabled and self._tool_calls_seen
+                else "stop"
+            )
+            yield self._sse(finish=finish_reason)
             yield "data: [DONE]\n\n"
         except asyncio.CancelledError:
             logger.debug("Stream cancelled by client", extra={"model": self.model})
@@ -710,9 +943,17 @@ class StreamProcessor(proc_base.BaseProcessor):
 class CollectProcessor(proc_base.BaseProcessor):
     """Non-stream response processor."""
 
-    def __init__(self, model: str, token: str = ""):
+    def __init__(
+        self,
+        model: str,
+        token: str = "",
+        tools: List[Dict[str, Any]] = None,
+        tool_choice: Any = None,
+    ):
         super().__init__(model, token)
         self.filter_tags = get_config("app.filter_tags")
+        self.tools = tools
+        self.tool_choice = tool_choice
 
     def _filter_content(self, content: str) -> str:
         """Filter special tags in content."""
@@ -794,6 +1035,7 @@ class CollectProcessor(proc_base.BaseProcessor):
                         card_map[card_id] = (title, original)
 
                     if content and card_map:
+
                         def _render_card(match: re.Match) -> str:
                             card_id = match.group(1)
                             item = card_map.get(card_id)
@@ -855,6 +1097,24 @@ class CollectProcessor(proc_base.BaseProcessor):
 
         content = self._filter_content(content)
 
+        finish_reason = "stop"
+        tool_calls_result = None
+        if self.tools and self.tool_choice != "none":
+            text_content, tool_calls_list = parse_tool_calls(content, self.tools)
+            if tool_calls_list:
+                tool_calls_result = tool_calls_list
+                content = text_content
+                finish_reason = "tool_calls"
+
+        message_obj = {
+            "role": "assistant",
+            "content": content,
+            "refusal": None,
+            "annotations": [],
+        }
+        if tool_calls_result:
+            message_obj["tool_calls"] = tool_calls_result
+
         return {
             "id": response_id,
             "object": "chat.completion",
@@ -864,13 +1124,8 @@ class CollectProcessor(proc_base.BaseProcessor):
             "choices": [
                 {
                     "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": content,
-                        "refusal": None,
-                        "annotations": [],
-                    },
-                    "finish_reason": "stop",
+                    "message": message_obj,
+                    "finish_reason": finish_reason,
                 }
             ],
             "usage": {
