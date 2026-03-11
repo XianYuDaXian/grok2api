@@ -29,9 +29,8 @@ class NsfwMgmtReverse:
             GrpcStatus: Parsed gRPC status.
         """
         try:
-            # Get proxies
-            base_proxy = get_config("proxy.base_proxy_url")
-            proxies = {"http": base_proxy, "https": base_proxy} if base_proxy else None
+            # Get proxy
+            base_proxy = str(get_config("proxy.base_proxy_url") or "").strip() or None
 
             # Build headers
             headers = build_headers(
@@ -63,7 +62,7 @@ class NsfwMgmtReverse:
                     headers=headers,
                     data=payload,
                     timeout=timeout,
-                    proxies=proxies,
+                    proxy=base_proxy,
                     impersonate=browser,
                 )
 
@@ -77,7 +76,9 @@ class NsfwMgmtReverse:
                         details={"status": response.status_code},
                     )
 
-                logger.debug(f"NsfwMgmtReverse: Request successful, {response.status_code}")
+                logger.debug(
+                    f"NsfwMgmtReverse: Request successful, {response.status_code}"
+                )
 
                 return response
 
@@ -105,11 +106,6 @@ class NsfwMgmtReverse:
         except Exception as e:
             # Handle upstream exception
             if isinstance(e, UpstreamException):
-                status = None
-                if e.details and "status" in e.details:
-                    status = e.details["status"]
-                else:
-                    status = getattr(e, "status_code", None)
                 raise
 
             # Handle other non-upstream exceptions

@@ -30,9 +30,8 @@ class RateLimitsReverse:
             Any: The response from the request.
         """
         try:
-            # Get proxies
-            base_proxy = get_config("proxy.base_proxy_url")
-            proxies = {"http": base_proxy, "https": base_proxy} if base_proxy else None
+            # Get proxy
+            base_proxy = str(get_config("proxy.base_proxy_url") or "").strip() or None
 
             # Build headers
             headers = build_headers(
@@ -58,7 +57,7 @@ class RateLimitsReverse:
                     headers=headers,
                     data=orjson.dumps(payload),
                     timeout=timeout,
-                    proxies=proxies,
+                    proxy=base_proxy,
                     impersonate=browser,
                 )
 
@@ -79,11 +78,6 @@ class RateLimitsReverse:
         except Exception as e:
             # Handle upstream exception
             if isinstance(e, UpstreamException):
-                status = None
-                if e.details and "status" in e.details:
-                    status = e.details["status"]
-                else:
-                    status = getattr(e, "status_code", None)
                 raise
 
             # Handle other non-upstream exceptions
