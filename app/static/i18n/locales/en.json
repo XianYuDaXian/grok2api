@@ -141,7 +141,6 @@
         "stream": {"title": "Streaming", "desc": "Whether to enable streaming output by default."},
         "thinking": {"title": "Chain of Thought", "desc": "Whether to enable chain of thought output by default."},
         "dynamic_statsig": {"title": "Dynamic Fingerprint", "desc": "Whether to enable dynamic Statsig fingerprint generation by default."},
-        "custom_instruction": {"title": "Custom Instruction", "desc": "Multi-line text passed through as Grok request parameter customPersonality."},
         "filter_tags": {"title": "Filter Tags", "desc": "Configure automatic filtering of special tags in Grok responses."}
       },
       "proxy": {

@@ -5,7 +5,7 @@ Grok Chat 服务
 import asyncio
 import re
 import uuid
-from typing import Dict, List, Any, AsyncGenerator, AsyncIterable
+from typing import Dict, List, Any, AsyncGenerator, AsyncIterable, Optional
 
 import orjson
 from curl_cffi.requests import AsyncSession
@@ -281,6 +281,44 @@ class MessageExtractor:
     """消息内容提取器"""
 
     @staticmethod
+    def extract_system_custom_personality(
+        messages: List[Dict[str, Any]],
+    ) -> tuple[Optional[str], List[Dict[str, Any]]]:
+        personality_parts: List[str] = []
+        remaining_messages: List[Dict[str, Any]] = []
+
+        for msg in messages:
+            role = (msg.get("role") or "").strip()
+            content = msg.get("content", "")
+
+            if role != "system":
+                remaining_messages.append(msg)
+                continue
+
+            parts: List[str] = []
+            if isinstance(content, str):
+                if content.strip():
+                    parts.append(content.strip())
+            elif isinstance(content, dict):
+                content = [content]
+
+            if isinstance(content, list):
+                for item in content:
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("type") != "text":
+                        continue
+                    text = item.get("text", "")
+                    if isinstance(text, str) and text.strip():
+                        parts.append(text.strip())
+
+            if parts:
+                personality_parts.append("\n".join(parts))
+
+        personality = "\n\n".join(x for x in personality_parts if x.strip()).strip()
+        return personality or None, remaining_messages
+
+    @staticmethod
     def extract(
         messages: List[Dict[str, Any]],
         tools: List[Dict[str, Any]] = None,
@@ -457,6 +495,7 @@ class GrokChatService:
         file_attachments: List[str] = None,
         tool_overrides: Dict[str, Any] = None,
         model_config_override: Dict[str, Any] = None,
+        custom_personality: Optional[str] = None,
         image_generation_count: int | None = None,
     ):
         """发送聊天请求"""
@@ -486,6 +525,7 @@ class GrokChatService:
                         file_attachments=file_attachments,
                         tool_overrides=tool_overrides,
                         model_config_override=model_config_override,
+                        custom_personality=custom_personality,
                         image_generation_count=image_generation_count,
                     )
                     logger.info(
@@ -525,7 +565,13 @@ class GrokChatService:
 
         grok_model = model_info.grok_model
         mode = model_info.model_mode
-        # 提取消息和附件
+        # 提取 system prompt、消息和附件
+        custom_personality = None
+        extracted_custom, remaining_messages = MessageExtractor.extract_system_custom_personality(messages)
+        if extracted_custom:
+            custom_personality = extracted_custom
+            messages = remaining_messages
+
         message, file_attachments, image_attachments = MessageExtractor.extract(
             messages,
             tools=tools,
@@ -579,6 +625,7 @@ class GrokChatService:
             file_attachments=all_attachments,
             tool_overrides=None,
             model_config_override=model_config_override,
+            custom_personality=custom_personality,
         )
 
         return response, stream, model

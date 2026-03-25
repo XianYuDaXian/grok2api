@@ -13,6 +13,9 @@ import tomllib
 from app.core.logger import logger
 
 DEFAULT_CONFIG_FILE = Path(__file__).parent.parent.parent / "config.defaults.toml"
+REMOVED_CONFIG_KEYS = {
+    "app": {"custom_instruction"},
+}
 
 
 def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -29,6 +32,17 @@ def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any
             result[key] = _deep_merge(result[key], val)
         else:
             result[key] = val
+    return result
+
+
+def _prune_removed_config_keys(config: Dict[str, Any]) -> Dict[str, Any]:
+    result = deepcopy(config)
+    for section, keys in REMOVED_CONFIG_KEYS.items():
+        section_data = result.get(section)
+        if not isinstance(section_data, dict):
+            continue
+        for key in keys:
+            section_data.pop(key, None)
     return result
 
 
@@ -234,7 +248,7 @@ class Config:
                     logger.info(f"Failed to auto-init config from local: {e}")
                     config_data = {}
 
-            config_data = config_data or {}
+            config_data = _prune_removed_config_keys(config_data or {})
 
             # 检查是否有废弃的配置节
             valid_sections = set(self._defaults.keys())
@@ -292,8 +306,8 @@ class Config:
         storage = get_storage()
         async with storage.acquire_lock("config_save", timeout=10):
             self._ensure_defaults()
-            base = _deep_merge(self._defaults, self._config or {})
-            merged = _deep_merge(base, new_config or {})
+            base = _prune_removed_config_keys(_deep_merge(self._defaults, self._config or {}))
+            merged = _prune_removed_config_keys(_deep_merge(base, new_config or {}))
             await storage.save_config(merged)
             self._config = merged
 

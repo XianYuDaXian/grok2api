@@ -374,7 +374,11 @@ function renderConfig(data) {
     const keyOrder = localeSection ? new Map(Object.keys(localeSection).map((k, i) => [k, i])) : null;
 
     const allKeys = sortByOrder(Object.keys(items), keyOrder);
-    const visibleKeys = allKeys.filter(key => !(section === 'proxy' && key === 'cf_cookies'));
+    const visibleKeys = allKeys.filter(key => {
+      if (section === 'proxy' && key === 'cf_cookies') return false;
+      if (section === 'app' && key === 'custom_instruction') return false;
+      return true;
+    });
 
     if (visibleKeys.length > 0) {
       const card = document.createElement('div');

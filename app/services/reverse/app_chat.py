@@ -40,18 +40,6 @@ class AppChatReverse:
     """/rest/app-chat/conversations/new reverse interface."""
 
     @staticmethod
-    def _resolve_custom_personality() -> Optional[str]:
-        """Resolve optional custom personality from app config."""
-        value = get_config("app.custom_instruction", "")
-        if value is None:
-            return None
-        if not isinstance(value, str):
-            value = str(value)
-        if not value.strip():
-            return None
-        return value
-
-    @staticmethod
     def build_payload(
         message: str,
         model: str,
@@ -59,6 +47,7 @@ class AppChatReverse:
         file_attachments: List[str] = None,
         tool_overrides: Dict[str, Any] = None,
         model_config_override: Dict[str, Any] = None,
+        custom_personality: Optional[str] = None,
         image_generation_count: int | None = None,
     ) -> Dict[str, Any]:
         """Build chat payload for Grok app-chat API."""
@@ -112,9 +101,8 @@ class AppChatReverse:
         elif mode:
             payload["modelMode"] = mode
 
-        custom_personality = AppChatReverse._resolve_custom_personality()
-        if custom_personality is not None and "Greet the user" not in message[-1000:]:
-            payload["customPersonality"] = custom_personality
+        if isinstance(custom_personality, str) and custom_personality.strip():
+            payload["customPersonality"] = custom_personality.strip()
 
         return payload
 
@@ -129,6 +117,7 @@ class AppChatReverse:
         file_attachments: List[str] = None,
         tool_overrides: Dict[str, Any] = None,
         model_config_override: Dict[str, Any] = None,
+        custom_personality: Optional[str] = None,
         image_generation_count: int | None = None,
     ) -> Any:
         """Send app chat request to Grok.
@@ -167,6 +156,7 @@ class AppChatReverse:
                 file_attachments=file_attachments,
                 tool_overrides=tool_overrides,
                 model_config_override=model_config_override,
+                custom_personality=custom_personality,
                 image_generation_count=image_generation_count,
             )
             logger.info(
