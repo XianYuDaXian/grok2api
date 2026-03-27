@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.core.auth import verify_app_key
 from app.core.config import config
+from app.core.logger import logger
 from app.services.grok.services.model import ModelService
 from app.services.token import get_token_manager
 from app.core.storage import (
@@ -12,6 +13,7 @@ from app.core.storage import (
     RedisStorage,
     SQLStorage,
 )
+from app.services.cf_refresh.scheduler import refresh_once
 
 router = APIRouter()
 
@@ -36,6 +38,30 @@ async def update_config(data: dict):
         await config.update(data)
         return {"status": "success", "message": "配置已更新"}
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/config/cf-refresh", dependencies=[Depends(verify_app_key)])
+async def refresh_cf_clearance():
+    """手动刷新 cf_clearance。"""
+    try:
+        success = await refresh_once()
+        if not success:
+            raise HTTPException(status_code=500, detail="刷新失败，请检查 FlareSolverr、代理和网络配置")
+        proxy_conf = (config._config or {}).get("proxy", {}) if isinstance(config._config, dict) else {}
+        return {
+            "status": "success",
+            "message": "CF Clearance 已刷新",
+            "data": {
+                "browser": proxy_conf.get("browser") or "",
+                "user_agent": proxy_conf.get("user_agent") or "",
+                "has_cf_clearance": bool(proxy_conf.get("cf_clearance")),
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Manual cf_clearance refresh failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

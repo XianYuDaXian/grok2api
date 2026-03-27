@@ -388,6 +388,28 @@ function renderConfig(data) {
 
       const header = document.createElement('div');
       header.innerHTML = `<div class="config-section-title">${getSectionLabel(section)}</div>`;
+
+      if (section === 'proxy') {
+        const actionRow = document.createElement('div');
+        actionRow.className = 'flex items-center gap-2 mt-3 mb-4';
+
+        const refreshBtn = document.createElement('button');
+        refreshBtn.type = 'button';
+        refreshBtn.id = 'cf-refresh-btn';
+        refreshBtn.className = 'geist-button-outline gap-2';
+        refreshBtn.innerHTML = `
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 2v6h-6"></path>
+            <path d="M3 12a9 9 0 0 1 15-6.7L21 8"></path>
+            <path d="M3 22v-6h6"></path>
+            <path d="M21 12a9 9 0 0 1-15 6.7L3 16"></path>
+          </svg>
+          手动刷新 CF
+        `;
+        refreshBtn.addEventListener('click', manualRefreshCfClearance);
+        actionRow.appendChild(refreshBtn);
+        header.appendChild(actionRow);
+      }
       
       // 添加部分说明（如果有）
       if (SECTION_DESCRIPTIONS[section]) {
@@ -419,6 +441,36 @@ function renderConfig(data) {
   // 初始化 CF 自动刷新联动状态
   const cfEnabled = data.proxy && data.proxy.enabled;
   applyCfRefreshState(cfEnabled);
+}
+
+async function manualRefreshCfClearance() {
+  const btn = byId('cf-refresh-btn');
+  if (!btn) return;
+  const originalHtml = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = `
+    <svg class="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M21 12a9 9 0 1 1-6.219-8.56"></path>
+    </svg>
+    刷新中...
+  `;
+  try {
+    const res = await fetch('/v1/admin/config/cf-refresh', {
+      method: 'POST',
+      headers: buildAuthHeaders(apiKey)
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || data.message || `HTTP ${res.status}`);
+    }
+    showToast(data.message || 'CF Clearance 已刷新', 'success');
+    await loadData();
+  } catch (e) {
+    showToast(`刷新失败: ${e.message || e}`, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = originalHtml;
+  }
 }
 
 function normalizeModelRoutingAssignments(raw) {
