@@ -30,6 +30,10 @@ uv sync
 uv run main.py
 ```
 
+> [!IMPORTANT]
+> 当前仓库锁定 `curl_cffi 0.15.0b4`，用于兼容较新的 Chrome 浏览器指纹（例如 `chrome145`）。
+> 直接使用仓库自带的 `uv.lock` 执行 `uv sync` 即可；如果你需要手动刷新锁文件或重解依赖，请允许预发布版本，例如 `uv lock --prerelease=allow`。
+
 默认访问：
 
 - Web 首页：`http://127.0.0.1:8000`
@@ -130,6 +134,9 @@ docker compose up -d --build
 - `CF_TIMEOUT`
 
 并同时启用 `flaresolverr` 服务。
+
+> [!TIP]
+> 启用 Cloudflare 自动刷新后，程序会根据 FlareSolverr 返回的 User-Agent 更新 `proxy.browser`。如果你的环境里仍使用旧版 `curl_cffi`，可能会在较新的 Chrome 指纹上报出 `Impersonating chromeXXX is not supported`。请优先使用仓库当前锁定版本，或在手动安装时带上 `--pre`。
 
 ## Vercel 部署
 
