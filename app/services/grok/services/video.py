@@ -30,7 +30,13 @@ from app.services.grok.utils.process import (
     _normalize_line,
     _is_http2_error,
 )
-from app.services.grok.utils.retry import rate_limited
+from app.services.grok.utils.retry import (
+    rate_limited,
+    handle_token_retryable_error,
+    token_invalid,
+    token_probationary_invalid,
+    confirm_token_invalid_after_fallback_success,
+)
 from app.services.reverse.app_chat import AppChatReverse
 from app.services.reverse.media_post import MediaPostReverse
 from app.services.reverse.video_upscale import VideoUpscaleReverse
@@ -1194,6 +1200,7 @@ class VideoService:
 
         max_token_retries = int(get_config("retry.max_retry"))
         last_error: Exception | None = None
+        probationary_invalid_tokens: dict[str, UpstreamException] = {}
 
         if reasoning_effort is None:
             show_think = get_config("app.thinking")
@@ -1382,6 +1389,14 @@ class VideoService:
                         upscale_on_finish=should_upscale,
                         idle_timeout_override=None,
                     )
+                    if probationary_invalid_tokens:
+                        for failed_token, failed_error in probationary_invalid_tokens.items():
+                            await confirm_token_invalid_after_fallback_success(
+                                token_mgr,
+                                failed_token,
+                                failed_error,
+                                "video_token_invalid_confirmed_after_fallback",
+                            )
                     return wrap_stream_with_usage(
                         processor.process(combined_response), token_mgr, token, model
                     )
@@ -1405,18 +1420,29 @@ class VideoService:
                     )
                 except Exception as e:
                     logger.warning(f"Failed to record video usage: {e}")
+                if probationary_invalid_tokens:
+                    for failed_token, failed_error in probationary_invalid_tokens.items():
+                        await confirm_token_invalid_after_fallback_success(
+                            token_mgr,
+                            failed_token,
+                            failed_error,
+                            "video_token_invalid_confirmed_after_fallback",
+                        )
                 return result
 
             except UpstreamException as e:
                 last_error = e
-                status_code = e.details.get("status") if e.details else getattr(e, "status_code", None)
-                if rate_limited(e) or status_code == 401:
-                    if rate_limited(e):
-                        await token_mgr.mark_rate_limited(token)
-                    else:
-                        await token_mgr.record_fail(token, status_code, "video_auth_failed_401")
+                if await handle_token_retryable_error(
+                    token_mgr,
+                    token,
+                    e,
+                    "video_token_invalid" if token_invalid(e) else "video_rate_limited",
+                ):
+                    if token_probationary_invalid(e):
+                        probationary_invalid_tokens[token] = e
                     logger.warning(
-                        f"Token {_token_tag(token)} {'rate limited (429)' if rate_limited(e) else 'auth failed (401)'}, "
+                        f"Token {_token_tag(token)} "
+                        f"{'invalid (400/401)' if (token_invalid(e) or token_probationary_invalid(e)) else 'rate limited (429)'}, "
                         f"trying next token (attempt {attempt + 1}/{max_token_retries})"
                     )
                     continue

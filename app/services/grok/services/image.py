@@ -19,7 +19,14 @@ from app.core.logger import logger
 from app.core.storage import DATA_DIR
 from app.core.exceptions import AppException, ErrorType, UpstreamException
 from app.services.grok.utils.process import BaseProcessor
-from app.services.grok.utils.retry import pick_token, rate_limited
+from app.services.grok.utils.retry import (
+    pick_token,
+    rate_limited,
+    handle_token_retryable_error,
+    token_invalid,
+    token_probationary_invalid,
+    confirm_token_invalid_after_fallback_success,
+)
 from app.services.grok.utils.stream import wrap_stream_with_usage
 from app.services.token import EffortType
 from app.services.reverse.media_post import MediaPostReverse
@@ -112,6 +119,7 @@ class ImageGenerationService:
         max_token_retries = int(get_config("retry.max_retry"))
         tried_tokens: set[str] = set()
         last_error: Optional[Exception] = None
+        probationary_invalid_tokens: dict[str, UpstreamException] = {}
 
         if stream:
             async def _stream_retry() -> AsyncGenerator[str, None]:
@@ -148,15 +156,30 @@ class ImageGenerationService:
                         async for chunk in result.data:
                             yielded = True
                             yield chunk
+                        if probationary_invalid_tokens:
+                            for failed_token, failed_error in probationary_invalid_tokens.items():
+                                await confirm_token_invalid_after_fallback_success(
+                                    token_mgr,
+                                    failed_token,
+                                    failed_error,
+                                    "image_token_invalid_confirmed_after_fallback",
+                                )
                         return
                     except UpstreamException as e:
                         last_error = e
-                        if rate_limited(e):
-                            if yielded:
-                                raise
-                            await token_mgr.mark_rate_limited(current_token)
+                        if yielded:
+                            raise
+                        if await handle_token_retryable_error(
+                            token_mgr,
+                            current_token,
+                            e,
+                            "image_token_invalid" if token_invalid(e) else "image_rate_limited",
+                        ):
+                            if token_probationary_invalid(e):
+                                probationary_invalid_tokens[current_token] = e
                             logger.warning(
-                                f"Token {current_token[:10]}... rate limited (429), "
+                                f"Token {current_token[:10]}... "
+                                f"{'invalid (400/401)' if (token_invalid(e) or token_probationary_invalid(e)) else 'rate limited (429)'}, "
                                 f"trying next token (attempt {attempt + 1}/{max_token_retries})"
                             )
                             continue
@@ -190,7 +213,7 @@ class ImageGenerationService:
 
             tried_tokens.add(current_token)
             try:
-                return await self._collect_ws(
+                result = await self._collect_ws(
                     token_mgr=token_mgr,
                     token=current_token,
                     model_info=model_info,
@@ -200,12 +223,28 @@ class ImageGenerationService:
                     aspect_ratio=aspect_ratio,
                     enable_nsfw=enable_nsfw,
                 )
+                if probationary_invalid_tokens:
+                    for failed_token, failed_error in probationary_invalid_tokens.items():
+                        await confirm_token_invalid_after_fallback_success(
+                            token_mgr,
+                            failed_token,
+                            failed_error,
+                            "image_token_invalid_confirmed_after_fallback",
+                        )
+                return result
             except UpstreamException as e:
                 last_error = e
-                if rate_limited(e):
-                    await token_mgr.mark_rate_limited(current_token)
+                if await handle_token_retryable_error(
+                    token_mgr,
+                    current_token,
+                    e,
+                    "image_token_invalid" if token_invalid(e) else "image_rate_limited",
+                ):
+                    if token_probationary_invalid(e):
+                        probationary_invalid_tokens[current_token] = e
                     logger.warning(
-                        f"Token {current_token[:10]}... rate limited (429), "
+                        f"Token {current_token[:10]}... "
+                        f"{'invalid (400/401)' if (token_invalid(e) or token_probationary_invalid(e)) else 'rate limited (429)'}, "
                         f"trying next token (attempt {attempt + 1}/{max_token_retries})"
                     )
                     continue

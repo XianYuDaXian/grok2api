@@ -79,6 +79,35 @@ class TokenService:
         return await manager.record_fail(token, status_code, reason)
 
     @staticmethod
+    async def mark_rate_limited(token: str) -> bool:
+        """
+        标记 Token 为限流冷却
+
+        Args:
+            token: Token 字符串
+
+        Returns:
+            是否成功
+        """
+        manager = await TokenService._get_manager()
+        return await manager.mark_rate_limited(token)
+
+    @staticmethod
+    async def mark_invalid(token: str, reason: str = "") -> bool:
+        """
+        立即标记 Token 失效
+
+        Args:
+            token: Token 字符串
+            reason: 失效原因
+
+        Returns:
+            是否成功
+        """
+        manager = await TokenService._get_manager()
+        return await manager.mark_invalid(token, reason)
+
+    @staticmethod
     async def add_token(token: str, pool_name: str = "ssoBasic") -> bool:
         """
         添加 Token

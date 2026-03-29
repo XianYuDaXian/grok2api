@@ -29,7 +29,14 @@ from app.services.grok.utils.process import (
     _is_http2_error,
 )
 from app.services.grok.utils.upload import UploadService
-from app.services.grok.utils.retry import pick_token, rate_limited
+from app.services.grok.utils.retry import (
+    pick_token,
+    rate_limited,
+    handle_token_retryable_error,
+    token_invalid,
+    token_probationary_invalid,
+    confirm_token_invalid_after_fallback_success,
+)
 from app.services.grok.services.chat import GrokChatService
 from app.services.grok.services.video import VideoService
 from app.services.grok.utils.stream import wrap_stream_with_usage
@@ -340,6 +347,7 @@ class ImageEditService:
         max_token_retries = int(get_config("retry.max_retry"))
         tried_tokens: set[str] = set()
         last_error: Exception | None = None
+        probationary_invalid_tokens: dict[str, UpstreamException] = {}
 
         for attempt in range(max_token_retries):
             preferred = token if attempt == 0 else None
@@ -427,6 +435,14 @@ class ImageEditService:
                         n=n,
                         response_format=response_format,
                     )
+                    if probationary_invalid_tokens:
+                        for failed_token, failed_error in probationary_invalid_tokens.items():
+                            await confirm_token_invalid_after_fallback_success(
+                                token_mgr,
+                                failed_token,
+                                failed_error,
+                                "image_edit_token_invalid_confirmed_after_fallback",
+                            )
                     return ImageEditResult(
                         stream=True,
                         data=wrap_stream_with_usage(
@@ -473,6 +489,14 @@ class ImageEditService:
                     )
                 except Exception as e:
                     logger.warning(f"Failed to record image edit usage: {e}")
+                if probationary_invalid_tokens:
+                    for failed_token, failed_error in probationary_invalid_tokens.items():
+                        await confirm_token_invalid_after_fallback_success(
+                            token_mgr,
+                            failed_token,
+                            failed_error,
+                            "image_edit_token_invalid_confirmed_after_fallback",
+                        )
                 return ImageEditResult(
                     stream=False,
                     data=images_out,
@@ -481,16 +505,21 @@ class ImageEditService:
 
             except UpstreamException as e:
                 last_error = e
-                if rate_limited(e):
-                    await token_mgr.mark_rate_limited(current_token)
+                if await handle_token_retryable_error(
+                    token_mgr,
+                    current_token,
+                    e,
+                    "image_edit_token_invalid" if token_invalid(e) else "image_edit_rate_limited",
+                ):
                     await self._emit_progress(
                         progress_cb,
-                        "rate_limited",
+                        "token_retry",
                         16,
-                        "令牌限流，正在切换重试",
+                        "令牌失效或限流，正在切换重试",
                     )
                     logger.warning(
-                        f"Token {current_token[:10]}... rate limited (429), "
+                        f"Token {current_token[:10]}... "
+                        f"{'invalid (400/401)' if (token_invalid(e) or token_probationary_invalid(e)) else 'rate limited (429)'}, "
                         f"trying next token (attempt {attempt + 1}/{max_token_retries})"
                     )
                     continue
@@ -523,6 +552,7 @@ class ImageEditService:
         max_token_retries = int(get_config("retry.max_retry"))
         tried_tokens: set[str] = set()
         last_error: Exception | None = None
+        probationary_invalid_tokens: dict[str, UpstreamException] = {}
 
         for attempt in range(max_token_retries):
             preferred = token if attempt == 0 else None
@@ -640,6 +670,14 @@ class ImageEditService:
                         n=1,
                         response_format=response_format,
                     )
+                    if probationary_invalid_tokens:
+                        for failed_token, failed_error in probationary_invalid_tokens.items():
+                            await confirm_token_invalid_after_fallback_success(
+                                token_mgr,
+                                failed_token,
+                                failed_error,
+                                "image_edit_token_invalid_confirmed_after_fallback",
+                            )
                     return ImageEditResult(
                         stream=True,
                         data=wrap_stream_with_usage(
@@ -687,6 +725,14 @@ class ImageEditService:
                     )
                 except Exception as e:
                     logger.warning(f"Failed to record image edit(parentPostId) usage: {e}")
+                if probationary_invalid_tokens:
+                    for failed_token, failed_error in probationary_invalid_tokens.items():
+                        await confirm_token_invalid_after_fallback_success(
+                            token_mgr,
+                            failed_token,
+                            failed_error,
+                            "image_edit_token_invalid_confirmed_after_fallback",
+                        )
                 return ImageEditResult(
                     stream=False,
                     data=images_out,
@@ -695,16 +741,21 @@ class ImageEditService:
 
             except UpstreamException as e:
                 last_error = e
-                if rate_limited(e):
-                    await token_mgr.mark_rate_limited(current_token)
+                if await handle_token_retryable_error(
+                    token_mgr,
+                    current_token,
+                    e,
+                    "image_edit_token_invalid" if token_invalid(e) else "image_edit_rate_limited",
+                ):
                     await self._emit_progress(
                         progress_cb,
-                        "rate_limited",
+                        "token_retry",
                         16,
-                        "令牌限流，正在切换重试",
+                        "令牌失效或限流，正在切换重试",
                     )
                     logger.warning(
-                        f"Token {current_token[:10]}... rate limited (429), "
+                        f"Token {current_token[:10]}... "
+                        f"{'invalid (400/401)' if (token_invalid(e) or token_probationary_invalid(e)) else 'rate limited (429)'}, "
                         f"trying next token (attempt {attempt + 1}/{max_token_retries})"
                     )
                     continue
@@ -864,6 +915,7 @@ class ImageEditService:
         max_token_retries = int(get_config("retry.max_retry"))
         tried_tokens: set[str] = set()
         last_error: Exception | None = None
+        probationary_invalid_tokens: dict[str, UpstreamException] = {}
 
         for attempt in range(max_token_retries):
             preferred = token if attempt == 0 else None
@@ -1020,9 +1072,15 @@ class ImageEditService:
             except Exception as e:
                 last_error = e
                 is_rl = rate_limited(e)
+                is_invalid = token_invalid(e) or token_probationary_invalid(e)
                 is_upload_rejected = _is_upload_rejected_error(e)
                 is_upload_network = _is_upload_network_error(e)
-                if not (is_rl or is_upload_rejected or is_upload_network):
+                if is_invalid:
+                    if token_probationary_invalid(e):
+                        probationary_invalid_tokens[current_token] = e
+                elif is_rl:
+                    await token_mgr.mark_rate_limited(current_token)
+                elif not (is_upload_rejected or is_upload_network):
                     raise
                 if attempt >= max_token_retries - 1:
                     raise

@@ -284,7 +284,12 @@ class AssetsUploadReverse:
                     status = getattr(e, "status_code", None)
                 if status == 401:
                     try:
-                        await TokenService.record_fail(token, status, "assets_upload_auth_failed")
+                        await TokenService.mark_invalid(token, "assets_upload_auth_failed")
+                    except Exception:
+                        pass
+                elif status == 429:
+                    try:
+                        await TokenService.mark_rate_limited(token)
                     except Exception:
                         pass
                 raise

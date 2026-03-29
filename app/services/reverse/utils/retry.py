@@ -17,7 +17,7 @@ class RetryContext:
     def __init__(self):
         self.attempt = 0
         self.max_retry = int(get_config("retry.max_retry") or 3)
-        self.retry_codes = get_config("retry.retry_status_codes") or [401, 403, 429]
+        self.retry_codes = []
         self.last_error = None
         self.last_status = None
         self.total_delay = 0.0

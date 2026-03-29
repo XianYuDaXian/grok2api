@@ -413,8 +413,8 @@ class TokenManager:
                     status = e.details["status"]
                 else:
                     status = getattr(e, "status_code", None)
-                if status == 401:
-                    await self.record_fail(token_str, status, "rate_limits_auth_failed")
+                if status in (400, 401):
+                    await self.mark_invalid(token_str, "rate_limits_auth_failed")
             logger.warning(
                 f"Token {raw_token[:10]}...: API sync failed, fallback to local ({e})"
             )
@@ -429,48 +429,34 @@ class TokenManager:
             )
             return False
 
-    async def record_fail(
-        self, token_str: str, status_code: int = 401, reason: str = ""
-    ) -> bool:
-        """
-        记录 Token 失败
-
-        Args:
-            token_str: Token 字符串
-            status_code: HTTP 状态码
-            reason: 失败原因
-
-        Returns:
-            是否成功
-        """
+    async def mark_invalid(self, token_str: str, reason: str = "") -> bool:
+        """将 token 立即标记为 expired。"""
         raw_token = token_str.replace("sso=", "")
 
         for pool in self.pools.values():
             token = pool.get(raw_token)
             if token:
-                if status_code == 401:
-                    threshold = get_config("token.fail_threshold", FAIL_THRESHOLD)
-                    try:
-                        threshold = int(threshold)
-                    except (TypeError, ValueError):
-                        threshold = FAIL_THRESHOLD
-                    if threshold < 1:
-                        threshold = 1
-
-                    token.record_fail(status_code, reason, threshold=threshold)
-                    logger.warning(
-                        f"Token {raw_token[:10]}...: recorded {status_code} failure "
-                        f"({token.fail_count}/{threshold}) - {reason}"
-                    )
-                else:
-                    logger.info(
-                        f"Token {raw_token[:10]}...: non-auth error ({status_code}) - {reason} (not counted)"
-                    )
+                token.mark_invalid(reason)
+                logger.warning(
+                    f"Token {raw_token[:10]}...: marked invalid immediately - {reason}"
+                )
                 self._schedule_save()
                 return True
 
-        logger.warning(f"Token {raw_token[:10]}...: not found for failure record")
+        logger.warning(f"Token {raw_token[:10]}...: not found for invalid mark")
         return False
+
+    async def record_fail(
+        self, token_str: str, status_code: int = 401, reason: str = ""
+    ) -> bool:
+        """兼容旧入口：认证失败时立即标记为 expired。"""
+        if status_code != 401:
+            raw_token = token_str.replace("sso=", "")
+            logger.info(
+                f"Token {raw_token[:10]}...: non-auth error ({status_code}) - {reason} (not counted)"
+            )
+            return False
+        return await self.mark_invalid(token_str, reason)
 
     async def mark_rate_limited(self, token_str: str) -> bool:
         """
@@ -741,19 +727,23 @@ class TokenManager:
                     except Exception as e:
                         error_str = str(e)
 
-                        # 检查是否为 401 错误
-                        if "401" in error_str or "Unauthorized" in error_str:
+                        # 配额刷新 / 后台手动刷新场景下，400/401 都视为 token 已失效
+                        if (
+                            "401" in error_str
+                            or "Unauthorized" in error_str
+                            or "400" in error_str
+                            or "Bad Request" in error_str
+                        ):
                             if retry < 2:
                                 logger.warning(
-                                    f"Token {token_info.token[:10]}...: 401 error, "
+                                    f"Token {token_info.token[:10]}...: auth/refresh error, "
                                     f"retry {retry + 1}/2..."
                                 )
                                 await asyncio.sleep(0.5)
                                 continue
                             else:
-                                # 重试 2 次后仍然 401，标记为 expired
                                 logger.error(
-                                    f"Token {token_info.token[:10]}...: 401 after 2 retries, "
+                                    f"Token {token_info.token[:10]}...: auth/refresh failed after retries, "
                                     f"marking as expired"
                                 )
                                 token_info.status = TokenStatus.EXPIRED

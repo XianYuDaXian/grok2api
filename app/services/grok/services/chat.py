@@ -23,7 +23,14 @@ from app.core.exceptions import (
 from app.services.grok.services.model import ModelService
 from app.services.grok.utils.upload import UploadService
 from app.services.grok.utils import process as proc_base
-from app.services.grok.utils.retry import pick_token, rate_limited
+from app.services.grok.utils.retry import (
+    pick_token,
+    rate_limited,
+    handle_token_retryable_error,
+    token_invalid,
+    token_probationary_invalid,
+    confirm_token_invalid_after_fallback_success,
+)
 from app.services.reverse.app_chat import AppChatReverse
 from app.services.grok.utils.stream import wrap_stream_with_usage
 from app.services.token import get_token_manager, EffortType
@@ -662,6 +669,7 @@ class ChatService:
         tried_tokens = set()
         max_token_retries = int(get_config("retry.max_retry", 3) or 3)
         last_error = None
+        probationary_invalid_tokens: dict[str, UpstreamException] = {}
 
         for attempt in range(max_token_retries):
             # 选择 token
@@ -704,6 +712,14 @@ class ChatService:
                         tools=tools,
                         tool_choice=tool_choice,
                     )
+                    if probationary_invalid_tokens:
+                        for failed_token, failed_error in probationary_invalid_tokens.items():
+                            await confirm_token_invalid_after_fallback_success(
+                                token_mgr,
+                                failed_token,
+                                failed_error,
+                                "chat_token_invalid_confirmed_after_fallback",
+                            )
                     return wrap_stream_with_usage(
                         processor.process(response), token_mgr, token, model
                     )
@@ -727,21 +743,34 @@ class ChatService:
                     logger.info(f"Chat completed: model={model}, effort={effort.value}")
                 except Exception as e:
                     logger.warning(f"Failed to record usage: {e}")
+                if probationary_invalid_tokens:
+                    for failed_token, failed_error in probationary_invalid_tokens.items():
+                        await confirm_token_invalid_after_fallback_success(
+                            token_mgr,
+                            failed_token,
+                            failed_error,
+                            "chat_token_invalid_confirmed_after_fallback",
+                        )
                 return result
 
             except UpstreamException as e:
                 last_error = e
 
-                if rate_limited(e):
-                    # 配额不足，标记 token 为 cooling 并换 token 重试
-                    await token_mgr.mark_rate_limited(token)
+                if await handle_token_retryable_error(
+                    token_mgr,
+                    token,
+                    e,
+                    "chat_token_invalid" if token_invalid(e) else "chat_rate_limited",
+                ):
+                    if token_probationary_invalid(e):
+                        probationary_invalid_tokens[token] = e
                     logger.warning(
-                        f"Token {token[:10]}... rate limited (429), "
+                        f"Token {token[:10]}... "
+                        f"{'invalid (400/401)' if (token_invalid(e) or token_probationary_invalid(e)) else 'rate limited (429)'}, "
                         f"trying next token (attempt {attempt + 1}/{max_token_retries})"
                     )
                     continue
 
-                # 非 429 错误，不换 token，直接抛出
                 raise
 
         # 所有 token 都 429，抛出最后的错误

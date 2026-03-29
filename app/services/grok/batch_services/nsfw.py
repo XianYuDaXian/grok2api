@@ -52,7 +52,7 @@ class NSFWService:
                         else:
                             status = getattr(err, "status_code", None)
                         if status == 401:
-                            await mgr.record_fail(token, status, reason)
+                            await mgr.mark_invalid(token, reason)
                         return status or 0
 
                     try:
