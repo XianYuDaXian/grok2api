@@ -102,7 +102,8 @@ const LOCALE_MAP = {
     "final_timeout": { title: "最终图超时", desc: "收到中等图后等待最终图的超时秒数。" },
     "nsfw": { title: "NSFW 模式", desc: "WebSocket 请求是否启用 NSFW。" },
     "medium_min_bytes": { title: "中等图最小字节", desc: "判定中等质量图的最小字节数。" },
-    "final_min_bytes": { title: "最终图最小字节", desc: "判定最终图的最小字节数（通常 JPG > 100KB）。" }
+    "final_min_bytes": { title: "最终图最小字节", desc: "判定最终图的最小字节数（通常 JPG > 100KB）。" },
+    "allow_ws_fallback": { title: "允许 WS 回退", desc: "图片生成在 app-chat 失败时，是否允许回退到旧 ws_imagine 通道。默认关闭，仅排障时开启。" }
   },
 
 

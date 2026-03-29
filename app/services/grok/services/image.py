@@ -240,6 +240,8 @@ class ImageGenerationService:
                     except UpstreamException as app_chat_error:
                         if rate_limited(app_chat_error):
                             raise
+                        if not bool(get_config("image.allow_ws_fallback")):
+                            raise
                         logger.warning(
                             f"App-chat image stream failed, fallback to ws_imagine: {app_chat_error}"
                         )
@@ -329,6 +331,8 @@ class ImageGenerationService:
                     )
                 except UpstreamException as app_chat_error:
                     if rate_limited(app_chat_error):
+                        raise
+                    if not bool(get_config("image.allow_ws_fallback")):
                         raise
                     logger.warning(
                         f"App-chat image collect failed, fallback to ws_imagine: {app_chat_error}"

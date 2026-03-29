@@ -122,6 +122,8 @@ nsfw = true
 medium_min_bytes = 30000
 # 判定为最终图的最小字节数
 final_min_bytes = 100000
+# 是否允许图片生成回退到旧 ws_imagine 通道（默认关闭，仅排障时显式开启）
+allow_ws_fallback = false
 
 # ==================== 视频配置 ====================
 [video]
