@@ -105,6 +105,11 @@ class ImageGenerationService:
     """Image generation orchestration service."""
 
     @staticmethod
+    def _preferred_upstream() -> str:
+        upstream = str(get_config("image.upstream") or "rest").strip().lower()
+        return upstream if upstream in {"rest", "ws"} else "rest"
+
+    @staticmethod
     def _app_chat_request_overrides(n: int, enable_nsfw: bool | None) -> Dict[str, Any]:
         overrides: Dict[str, Any] = {"imageGenerationCount": max(1, int(n or 1))}
         if enable_nsfw is not None:
@@ -225,25 +230,41 @@ class ImageGenerationService:
 
                     tried_tokens.add(current_token)
                     yielded = False
+                    preferred_upstream = self._preferred_upstream()
                     try:
-                        result = await self._stream_app_chat(
-                            token_mgr=token_mgr,
-                            token=current_token,
-                            model_info=model_info,
-                            prompt=prompt,
-                            n=n,
-                            response_format=response_format,
-                            size=size,
-                            aspect_ratio=aspect_ratio,
-                            enable_nsfw=enable_nsfw,
-                        )
-                    except UpstreamException as app_chat_error:
-                        if rate_limited(app_chat_error):
+                        if preferred_upstream == "ws":
+                            result = await self._stream_ws(
+                                token_mgr=token_mgr,
+                                token=current_token,
+                                model_info=model_info,
+                                prompt=prompt,
+                                n=n,
+                                response_format=response_format,
+                                size=size,
+                                aspect_ratio=aspect_ratio,
+                                enable_nsfw=enable_nsfw,
+                            )
+                        else:
+                            result = await self._stream_app_chat(
+                                token_mgr=token_mgr,
+                                token=current_token,
+                                model_info=model_info,
+                                prompt=prompt,
+                                n=n,
+                                response_format=response_format,
+                                size=size,
+                                aspect_ratio=aspect_ratio,
+                                enable_nsfw=enable_nsfw,
+                            )
+                    except UpstreamException as primary_error:
+                        if rate_limited(primary_error):
+                            raise
+                        if preferred_upstream == "ws":
                             raise
                         if not bool(get_config("image.allow_ws_fallback")):
                             raise
                         logger.warning(
-                            f"App-chat image stream failed, fallback to ws_imagine: {app_chat_error}"
+                            f"App-chat image stream failed, fallback to ws_imagine: {primary_error}"
                         )
                         result = await self._stream_ws(
                             token_mgr=token_mgr,
@@ -317,25 +338,40 @@ class ImageGenerationService:
 
             tried_tokens.add(current_token)
             try:
+                preferred_upstream = self._preferred_upstream()
                 try:
-                    result = await self._collect_app_chat(
-                        token_mgr=token_mgr,
-                        token=current_token,
-                        model_info=model_info,
-                        prompt=prompt,
-                        n=n,
-                        response_format=response_format,
-                        size=size,
-                        aspect_ratio=aspect_ratio,
-                        enable_nsfw=enable_nsfw,
-                    )
-                except UpstreamException as app_chat_error:
-                    if rate_limited(app_chat_error):
+                    if preferred_upstream == "ws":
+                        result = await self._collect_ws(
+                            token_mgr=token_mgr,
+                            token=current_token,
+                            model_info=model_info,
+                            prompt=prompt,
+                            n=n,
+                            response_format=response_format,
+                            aspect_ratio=aspect_ratio,
+                            enable_nsfw=enable_nsfw,
+                        )
+                    else:
+                        result = await self._collect_app_chat(
+                            token_mgr=token_mgr,
+                            token=current_token,
+                            model_info=model_info,
+                            prompt=prompt,
+                            n=n,
+                            response_format=response_format,
+                            size=size,
+                            aspect_ratio=aspect_ratio,
+                            enable_nsfw=enable_nsfw,
+                        )
+                except UpstreamException as primary_error:
+                    if rate_limited(primary_error):
+                        raise
+                    if preferred_upstream == "ws":
                         raise
                     if not bool(get_config("image.allow_ws_fallback")):
                         raise
                     logger.warning(
-                        f"App-chat image collect failed, fallback to ws_imagine: {app_chat_error}"
+                        f"App-chat image collect failed, fallback to ws_imagine: {primary_error}"
                     )
                     result = await self._collect_ws(
                         token_mgr=token_mgr,

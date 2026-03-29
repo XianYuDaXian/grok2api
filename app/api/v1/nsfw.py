@@ -291,7 +291,7 @@ async def _generate_nsfw_inner(data: NSFWRequest) -> Dict[str, Any]:
     images: List[str] = []
     seen = set()
 
-    async def _generate_one() -> Optional[str]:
+    async def _generate_one() -> List[str]:
         result = await image_service.generate(
             token_mgr=token_mgr,
             token=token,
@@ -304,11 +304,12 @@ async def _generate_nsfw_inner(data: NSFWRequest) -> Dict[str, Any]:
             stream=False,
             enable_nsfw=True,
         )
+        images_batch: List[str] = []
         if isinstance(result.data, list) and result.data:
-            first = result.data[0]
-            if first and first != "error":
-                return _normalize_image_url(first)
-        return None
+            for item in result.data:
+                if item and item != "error":
+                    images_batch.append(_normalize_image_url(item))
+        return images_batch
 
     for attempt in range(1, data.max_image_attempts + 1):
         remain = max(1, data.image_parallel - len(images))
@@ -319,10 +320,12 @@ async def _generate_nsfw_inner(data: NSFWRequest) -> Dict[str, Any]:
             if isinstance(item, Exception):
                 logger.warning(f"NSFW image attempt failed: {item}")
                 continue
-            if item and item not in seen:
-                seen.add(item)
-                images.append(item)
-                new_count += 1
+            batch_images = item if isinstance(item, list) else ([item] if item else [])
+            for image_url in batch_images:
+                if image_url and image_url not in seen:
+                    seen.add(image_url)
+                    images.append(image_url)
+                    new_count += 1
         logger.info(
             f"NSFW image attempt {attempt}/{data.max_image_attempts}: +{new_count}, total={len(images)}"
         )

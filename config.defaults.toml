@@ -118,6 +118,8 @@ stream_timeout = 60
 final_timeout = 15
 # 是否启用 NSFW
 nsfw = true
+# 图片生成上游实现（rest 或 ws）
+upstream = "rest"
 # 判定为中等质量图的最小字节数
 medium_min_bytes = 30000
 # 判定为最终图的最小字节数

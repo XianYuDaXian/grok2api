@@ -100,7 +100,8 @@ const LOCALE_MAP = {
     "timeout": { title: "请求超时", desc: "WebSocket 请求超时时间（秒）。" },
     "stream_timeout": { title: "流空闲超时", desc: "WebSocket 流式空闲超时时间（秒）。" },
     "final_timeout": { title: "最终图超时", desc: "收到中等图后等待最终图的超时秒数。" },
-    "nsfw": { title: "NSFW 模式", desc: "WebSocket 请求是否启用 NSFW。" },
+    "nsfw": { title: "NSFW 模式", desc: "图片生成默认是否启用 NSFW。" },
+    "upstream": { title: "上游实现", desc: "图片生成优先使用的上游实现：rest（app-chat）或 ws（旧 imagine 通道）。默认 rest。" },
     "medium_min_bytes": { title: "中等图最小字节", desc: "判定中等质量图的最小字节数。" },
     "final_min_bytes": { title: "最终图最小字节", desc: "判定最终图的最小字节数（通常 JPG > 100KB）。" },
     "allow_ws_fallback": { title: "允许 WS 回退", desc: "图片生成在 app-chat 失败时，是否允许回退到旧 ws_imagine 通道。默认关闭，仅排障时开启。" }
