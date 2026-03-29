@@ -49,6 +49,7 @@ class AppChatReverse:
         model_config_override: Dict[str, Any] = None,
         custom_personality: Optional[str] = None,
         image_generation_count: int | None = None,
+        request_overrides: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Build chat payload for Grok app-chat API."""
 
@@ -104,6 +105,9 @@ class AppChatReverse:
         if isinstance(custom_personality, str) and custom_personality.strip():
             payload["customPersonality"] = custom_personality.strip()
 
+        if request_overrides:
+            payload.update(request_overrides)
+
         return payload
 
     @staticmethod
@@ -119,6 +123,7 @@ class AppChatReverse:
         model_config_override: Dict[str, Any] = None,
         custom_personality: Optional[str] = None,
         image_generation_count: int | None = None,
+        request_overrides: Optional[Dict[str, Any]] = None,
     ) -> Any:
         """Send app chat request to Grok.
         
@@ -158,6 +163,7 @@ class AppChatReverse:
                 model_config_override=model_config_override,
                 custom_personality=custom_personality,
                 image_generation_count=image_generation_count,
+                request_overrides=request_overrides,
             )
             logger.info(
                 "AppChat request prepared: "
