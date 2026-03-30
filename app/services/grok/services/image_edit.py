@@ -110,8 +110,6 @@ async def _try_log_image_share_link(
 def _is_upload_rejected_error(exc: Exception) -> bool:
     """判断是否为上游审核导致的上传拒绝。"""
     msg = str(exc or "").lower()
-    if "content moderated" in msg or "content-moderated" in msg:
-        return True
     if '"code":3' in msg or "'code': 3" in msg:
         return True
 
@@ -120,15 +118,30 @@ def _is_upload_rejected_error(exc: Exception) -> bool:
         status = details.get("status")
         body = str(details.get("body") or "").lower()
         err = str(details.get("error") or "").lower()
-        if "content moderated" in body or "content-moderated" in body:
-            return True
         if '"code":3' in body or "'code': 3" in body:
             return True
-        # 某些链路只返回 400 + '"code"' 关键词，按拒绝处理。
-        if status == 400 and ('"code"' in err or "moderated" in err):
+        if status == 400 and '"code"' in err:
             return True
 
     return False
+
+
+def _is_content_moderated_error(exc: Exception) -> bool:
+    msg = str(exc or "").lower()
+    if "content moderated" in msg or "content-moderated" in msg:
+        return True
+
+    details = getattr(exc, "details", None)
+    if isinstance(details, dict):
+        hint = str(details.get("hint") or "").lower()
+        body = str(details.get("body") or "").lower()
+        if "content moderated" in hint or "content-moderated" in hint:
+            return True
+        if "content moderated" in body or "content-moderated" in body:
+            return True
+
+    code = str(getattr(exc, "code", "") or "").lower()
+    return code == "content_moderated"
 
 
 def _is_upload_network_error(exc: Exception) -> bool:
@@ -785,6 +798,13 @@ class ImageEditService:
                             f"https://assets.grok.com/{file_uri.lstrip('/')}"
                         )
         except Exception as e:
+            if _is_content_moderated_error(e):
+                raise AppException(
+                    message="图片内容触发审核限制，无法上传。请更换图片后重试。",
+                    error_type=ErrorType.INVALID_REQUEST.value,
+                    code="content_moderated",
+                    status_code=400,
+                )
             if _is_upload_rejected_error(e):
                 raise AppException(
                     message="图片上传被拒绝，请更换图片后重试",
@@ -1074,8 +1094,11 @@ class ImageEditService:
                 last_error = e
                 is_rl = rate_limited(e)
                 is_invalid = token_invalid(e) or token_probationary_invalid(e)
+                is_content_moderated = _is_content_moderated_error(e)
                 is_upload_rejected = _is_upload_rejected_error(e)
                 is_upload_network = _is_upload_network_error(e)
+                if is_content_moderated:
+                    raise
                 if is_invalid:
                     if token_probationary_invalid(e):
                         probationary_invalid_tokens[current_token] = e

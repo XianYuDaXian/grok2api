@@ -150,6 +150,25 @@ class UploadService:
             raise ValidationException(f"Image inspect failed: {e}")
 
     @staticmethod
+    def _extract_upstream_rejection_hint(exc: Exception) -> str:
+        text_parts = [str(exc or "")]
+        details = getattr(exc, "details", None)
+        if isinstance(details, dict):
+            text_parts.extend(
+                [
+                    str(details.get("hint") or ""),
+                    str(details.get("body") or ""),
+                    str(details.get("error") or ""),
+                ]
+            )
+        merged = " | ".join(part for part in text_parts if part).lower()
+        if "content is moderated" in merged or "content-moderated" in merged:
+            return "Content is moderated [WKE=file:content-moderated]"
+        if "just a moment" in merged or "cf-challenge" in merged or "cloudflare" in merged:
+            return "Cloudflare challenge page"
+        return ""
+
+    @staticmethod
     def _is_url(value: str) -> bool:
         """Check if the value is a URL."""
         try:
@@ -281,7 +300,7 @@ class UploadService:
         except Exception as e:
             if isinstance(e, AppException):
                 raise
-            logger.error(f"Fetch failed: {url} - {e}")
+            logger.error("Fetch failed: {} - {}", url, str(e))
             raise UpstreamException(f"Fetch failed: {str(e)}", details={"url": url})
 
     @staticmethod
@@ -365,6 +384,22 @@ class UploadService:
                 status = None
                 if e.details and "status" in e.details:
                     status = e.details.get("status")
+                body = (e.details or {}).get("body", "")
+                hint = (e.details or {}).get("hint", "")
+                normalized_hint = self._extract_upstream_rejection_hint(e) or hint
+                logger.warning(
+                    "Upload image upstream rejected: filename={}, status={}, hint={}, body={}",
+                    filename,
+                    status,
+                    normalized_hint or "-",
+                    body or "-",
+                )
+                if normalized_hint == "Content is moderated [WKE=file:content-moderated]":
+                    raise ValidationException(
+                        message="图片内容触发审核限制，无法上传。请更换图片后重试。",
+                        param="image",
+                        code="content_moderated",
+                    )
                 if mime != "image/jpeg" or status not in (400, 403):
                     raise
 
@@ -388,9 +423,11 @@ class UploadService:
                     try:
                         b64_retry = self._reencode_jpeg_with_profile(b64, **profile)
                         logger.warning(
-                            "Upload image fallback re-encode retry: "
-                            f"attempt={idx}, status={status}, profile={profile}, "
-                            f"out_len={len(b64_retry)}"
+                            "Upload image fallback re-encode retry: attempt={}, status={}, profile={}, out_len={}",
+                            idx,
+                            status,
+                            profile,
+                            len(b64_retry),
                         )
                         response = await AssetsUploadReverse.request(
                             session,

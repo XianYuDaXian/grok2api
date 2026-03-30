@@ -119,7 +119,7 @@ class StreamIdleTimeoutError(Exception):
 
 async def app_exception_handler(request: Request, exc: AppException) -> JSONResponse:
     """处理应用异常"""
-    logger.warning(f"AppException: {exc.error_type} - {exc.message}")
+    logger.warning("AppException: {} - {}", exc.error_type, exc.message)
 
     return JSONResponse(
         status_code=exc.status_code,
@@ -152,7 +152,7 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
     }
     code = code_map.get(exc.status_code, None)
 
-    logger.warning(f"HTTPException: {exc.status_code} - {exc.detail}")
+    logger.warning("HTTPException: {} - {}", exc.status_code, exc.detail)
 
     return JSONResponse(
         status_code=exc.status_code,
@@ -187,7 +187,7 @@ async def validation_exception_handler(
     else:
         param, message, code = None, "Invalid request", "invalid_value"
 
-    logger.warning(f"ValidationError: {param} - {message}")
+    logger.warning("ValidationError: {} - {}", param, message)
 
     return JSONResponse(
         status_code=400,
@@ -202,7 +202,7 @@ async def validation_exception_handler(
 
 async def generic_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """处理未捕获异常"""
-    logger.exception(f"Unhandled: {type(exc).__name__}: {str(exc)}")
+    logger.exception("Unhandled: {}: {}", type(exc).__name__, str(exc))
 
     return JSONResponse(
         status_code=500,
