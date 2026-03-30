@@ -26,6 +26,7 @@ from app.services.grok.utils.process import (
     _with_idle_timeout,
     _normalize_line,
     _collect_images,
+    extract_image_entries,
     _is_http2_error,
 )
 from app.services.grok.utils.upload import UploadService
@@ -1240,8 +1241,11 @@ class ImageStreamProcessor(BaseProcessor):
 
                 # modelResponse
                 if mr := resp.get("modelResponse"):
-                    if urls := _collect_images(mr):
-                        for url in urls:
+                    if image_entries := extract_image_entries(resp):
+                        for image_item in image_entries:
+                            url = str(image_item.get("url") or "").strip()
+                            if not url:
+                                continue
                             if self.response_format == "url":
                                 try:
                                     processed = await self.process_url(url, "image")
@@ -1395,8 +1399,11 @@ class ImageCollectProcessor(BaseProcessor):
                     )
 
                 if mr := resp.get("modelResponse"):
-                    if urls := _collect_images(mr):
-                        for url in urls:
+                    if image_entries := extract_image_entries(resp):
+                        for image_item in image_entries:
+                            url = str(image_item.get("url") or "").strip()
+                            if not url:
+                                continue
                             if self.response_format == "url":
                                 try:
                                     processed = await self.process_url(url, "image")

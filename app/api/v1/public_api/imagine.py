@@ -550,7 +550,7 @@ async def public_imagine_ws(websocket: WebSocket):
                     response_format="b64_json",
                     size="1024x1024",
                     aspect_ratio=aspect_ratio,
-                    stream=True,
+                    stream=False,
                     enable_nsfw=nsfw,
                 )
                 if result.stream:
@@ -756,7 +756,7 @@ async def public_imagine_sse(
                         response_format="b64_json",
                         size="1024x1024",
                         aspect_ratio=ratio,
-                        stream=True,
+                        stream=False,
                         enable_nsfw=nsfw,
                     )
                     if result.stream:

@@ -185,8 +185,8 @@ def _extract_card_attachment_sources(card_attachments: Any) -> Dict[str, List[Di
 
         if card_type == "render_searched_image":
             image = card.get("image") or {}
-            url = str(image.get("link") or image.get("original") or "").strip()
-            if url and url not in seen_images:
+            url = str(image.get("original") or image.get("link") or "").strip()
+            if url and (not proc_base._is_intermediate_image_url(url)) and url not in seen_images:
                 seen_images.add(url)
                 images.append(
                     {
@@ -1115,13 +1115,21 @@ class StreamProcessor(proc_base.BaseProcessor):
                         async for chunk in self._close_think_block():
                             yield chunk
                     self.image_think_active = False
-                    for url in proc_base._collect_images(mr):
+                    for image_item in proc_base.extract_image_entries(resp):
+                        url = image_item.get("url") or ""
+                        title = str(image_item.get("title") or "").strip()
                         parts = url.split("/")
-                        img_id = parts[-2] if len(parts) >= 2 else "image"
+                        img_id = title or (parts[-2] if len(parts) >= 2 else "image")
                         dl_service = self._get_dl()
-                        rendered = await dl_service.render_image(
-                            url, self.token, img_id
-                        )
+                        try:
+                            rendered = await dl_service.render_image(
+                                url, self.token, img_id
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                f"Skip image render failed: url={url}, image_id={img_id}, error={e}"
+                            )
+                            continue
                         yield self._sse(f"{rendered}\n")
 
                     if (
@@ -1167,7 +1175,13 @@ class StreamProcessor(proc_base.BaseProcessor):
                                 dl_service = getattr(self, "_get_dl", lambda: None)()
                                 if dl_service:
                                     img_id = title_safe if title_safe else "image"
-                                    rendered = await dl_service.render_image(original, self.token, img_id)
+                                    try:
+                                        rendered = await dl_service.render_image(original, self.token, img_id)
+                                    except Exception as e:
+                                        logger.warning(
+                                            f"Skip card image render failed: url={original}, image_id={img_id}, error={e}"
+                                        )
+                                        continue
                                     yield self._sse(f"{rendered}\n")
                                 else:
                                     if not original.startswith("http"):
@@ -1389,6 +1403,8 @@ class CollectProcessor(proc_base.BaseProcessor):
                         original = image.get("original")
                         if not card_id or not original:
                             continue
+                        if proc_base._is_intermediate_image_url(original):
+                            continue
                         title = image.get("title") or ""
                         card_map[card_id] = (title, original)
 
@@ -1414,11 +1430,14 @@ class CollectProcessor(proc_base.BaseProcessor):
                             flags=re.DOTALL,
                         )
 
-                    if urls := proc_base._collect_images(mr):
+                    image_entries = proc_base.extract_image_entries(resp)
+                    if image_entries:
                         content += "\n"
-                        for url in urls:
+                        for image_item in image_entries:
+                            url = image_item.get("url") or ""
+                            title = str(image_item.get("title") or "").strip()
                             parts = url.split("/")
-                            img_id = parts[-2] if len(parts) >= 2 else "image"
+                            img_id = title or (parts[-2] if len(parts) >= 2 else "image")
                             dl_service = self._get_dl()
                             rendered = await dl_service.render_image(
                                 url, self.token, img_id

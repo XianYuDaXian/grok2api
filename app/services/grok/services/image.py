@@ -18,6 +18,7 @@ from app.core.config import get_config
 from app.core.logger import logger
 from app.core.storage import DATA_DIR
 from app.core.exceptions import AppException, ErrorType, UpstreamException
+from app.services.grok.utils import process as proc_base
 from app.services.grok.utils.process import BaseProcessor
 from app.services.grok.utils.retry import (
     pick_token,
@@ -174,12 +175,60 @@ class ImageGenerationService:
             tool_overrides={"imageGen": True},
             request_overrides=self._app_chat_request_overrides(n, enable_nsfw),
         )
-        processor = ImageCollectProcessor(
-            model_info.model_id,
-            token,
-            response_format=response_format,
-        )
-        images = await processor.process(response)
+        images: List[str] = []
+        idle_timeout = get_config("image.stream_timeout")
+        processor = ImageWSBaseProcessor(model_info.model_id, token, response_format)
+        try:
+            async for line in proc_base._with_idle_timeout(
+                response, idle_timeout, model_info.model_id
+            ):
+                line = proc_base._normalize_line(line)
+                if not line:
+                    continue
+                try:
+                    data = orjson.loads(line)
+                except orjson.JSONDecodeError:
+                    continue
+                resp = data.get("result", {}).get("response", {})
+                if not isinstance(resp, dict):
+                    continue
+                image_entries = proc_base.extract_image_entries(resp)
+                if not image_entries:
+                    continue
+                for image_item in image_entries:
+                    url = str(image_item.get("url") or "").strip()
+                    if not url:
+                        continue
+                    try:
+                        if response_format == "url":
+                            processed = await processor.process_url(url, "image")
+                            if processed:
+                                images.append(processed)
+                        else:
+                            dl_service = processor._get_dl()
+                            base64_data = await dl_service.parse_b64(url, token, "image")
+                            if not base64_data:
+                                continue
+                            if "," in base64_data:
+                                images.append(base64_data.split(",", 1)[1])
+                            else:
+                                images.append(base64_data)
+                    except AppException as e:
+                        if getattr(e, "code", "") == "intermediate_image_skipped":
+                            continue
+                        logger.warning(
+                            f"Skip image app-chat collect item: url={url}, error={e}"
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"Skip image app-chat collect item: url={url}, error={e}"
+                        )
+        except asyncio.CancelledError:
+            logger.debug("Image app-chat collect cancelled by client")
+        except Exception as e:
+            logger.warning(f"Image app-chat collect failed: {e}")
+        finally:
+            await processor.close()
         selected = self._select_images(images, n)
         usage_override = {
             "total_tokens": 0,

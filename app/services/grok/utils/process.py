@@ -4,7 +4,9 @@
 
 import asyncio
 import time
-from typing import Any, AsyncGenerator, Optional, AsyncIterable, List, TypeVar
+from typing import Any, AsyncGenerator, Optional, AsyncIterable, List, TypeVar, Dict
+
+import orjson
 
 from app.core.config import get_config
 from app.core.logger import logger
@@ -39,35 +41,88 @@ def _normalize_line(line: Any) -> Optional[str]:
     return text
 
 
-def _collect_images(obj: Any) -> List[str]:
-    """递归收集响应中的图片 URL"""
-    urls: List[str] = []
-    seen = set()
+def _is_intermediate_image_url(url: Any) -> bool:
+    text = str(url or "").strip().lower()
+    return text.endswith("-part-0/image.jpg")
 
-    def add(url: str):
-        if not url or url in seen:
+
+def extract_image_entries(response_or_model: Any) -> List[Dict[str, str]]:
+    """统一提取 app-chat / modelResponse 中的图片条目。"""
+    entries: List[Dict[str, str]] = []
+    seen: set[str] = set()
+
+    def add(url: Any, *, title: str = "", source: str = ""):
+        text = str(url or "").strip()
+        if not text or _is_intermediate_image_url(text) or text in seen:
             return
-        seen.add(url)
-        urls.append(url)
+        seen.add(text)
+        entries.append(
+            {
+                "url": text,
+                "title": str(title or "").strip(),
+                "source": str(source or "").strip(),
+            }
+        )
 
-    def walk(value: Any):
+    def walk_model_response(value: Any):
         if isinstance(value, dict):
             for key, item in value.items():
                 if key in {"generatedImageUrls", "imageUrls", "imageURLs"}:
                     if isinstance(item, list):
                         for url in item:
                             if isinstance(url, str):
-                                add(url)
+                                add(url, source="model_response")
                     elif isinstance(item, str):
-                        add(item)
+                        add(item, source="model_response")
                     continue
-                walk(item)
+                walk_model_response(item)
         elif isinstance(value, list):
             for item in value:
-                walk(item)
+                walk_model_response(item)
 
-    walk(obj)
-    return urls
+    def collect_card_json(raw_json: str, *, source: str):
+        try:
+            card = orjson.loads(raw_json)
+        except orjson.JSONDecodeError:
+            return
+        if not isinstance(card, dict):
+            return
+        image = card.get("image") or {}
+        title = str(image.get("title") or "").strip()
+        add(image.get("original") or image.get("link") or image.get("thumbnail"), title=title, source=source)
+        image_chunk = card.get("image_chunk") or {}
+        chunk_title = str(image_chunk.get("imageTitle") or title or "").strip()
+        add(image_chunk.get("imageUrl") or image_chunk.get("thumbnailImageUrl"), title=chunk_title, source=source)
+
+    if not isinstance(response_or_model, dict):
+        return entries
+
+    if "result" in response_or_model or "cardAttachment" in response_or_model or "modelResponse" in response_or_model:
+        resp = response_or_model.get("result", {}).get("response", response_or_model)
+    else:
+        resp = response_or_model
+
+    if not isinstance(resp, dict):
+        return entries
+
+    model_response = resp.get("modelResponse") or resp if "message" in resp else {}
+    if isinstance(model_response, dict):
+        walk_model_response(model_response)
+        for raw in model_response.get("cardAttachmentsJson") or []:
+            if isinstance(raw, str) and raw.strip():
+                collect_card_json(raw, source="card_attachments_json")
+
+    card = resp.get("cardAttachment") or {}
+    json_data = card.get("jsonData")
+    if isinstance(json_data, str) and json_data.strip():
+        collect_card_json(json_data, source="card_attachment")
+
+    return entries
+
+
+def _collect_images(obj: Any) -> List[str]:
+    """兼容旧入口：返回统一提图器中的 URL 列表。"""
+    return [item["url"] for item in extract_image_entries(obj)]
 
 
 async def _with_idle_timeout(

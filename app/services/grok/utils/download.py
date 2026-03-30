@@ -53,30 +53,32 @@ class DownloadService:
     async def resolve_url(
         self, path_or_url: str, token: str, media_type: str = "image"
     ) -> str:
-        if self._is_public_share_url(path_or_url):
+        raw = str(path_or_url or "").strip()
+        if media_type == "image" and raw.lower().endswith("-part-0/image.jpg"):
+            raise AppException("Skip intermediate image", code="intermediate_image_skipped")
+        if self._should_direct_download(raw):
             app_url = get_config("app.app_url")
-            filename = self._public_cache_filename(path_or_url, media_type)
+            filename = self._public_cache_filename(raw, media_type)
             if app_url:
-                await self.download_file(path_or_url, token, media_type)
+                await self.download_file(raw, token, media_type)
                 return f"{app_url.rstrip('/')}/v1/files/{media_type}/{filename}"
-            return path_or_url
+            return raw
 
-        asset_url = path_or_url
-        path = path_or_url
-        if path_or_url.startswith("http"):
-            parsed = urlparse(path_or_url)
-            path = parsed.path or ""
-            asset_url = path_or_url
+        is_full_url = self._is_url(raw)
+        if is_full_url:
+            asset_url = raw
         else:
-            if not path_or_url.startswith("/"):
-                path_or_url = f"/{path_or_url}"
-            path = path_or_url
-            asset_url = f"https://assets.grok.com{path_or_url}"
+            if not raw.startswith("/"):
+                raw = f"/{raw}"
+            asset_url = f"https://assets.grok.com{raw}"
 
         app_url = get_config("app.app_url")
         if app_url:
             await self.download_file(asset_url, token, media_type)
-            return f"{app_url.rstrip('/')}/v1/files/{media_type}{path}"
+            if is_full_url:
+                filename = self._public_cache_filename(asset_url, media_type)
+                return f"{app_url.rstrip('/')}/v1/files/{media_type}/{filename}"
+            return f"{app_url.rstrip('/')}/v1/files/{media_type}{raw}"
         return asset_url
 
     @staticmethod
@@ -88,6 +90,18 @@ class DownloadService:
         )
 
     @staticmethod
+    def _is_assets_url(url: str) -> bool:
+        parsed = urlparse(str(url or "").strip())
+        host = (parsed.hostname or "").lower()
+        return host == "assets.grok.com"
+
+    def _should_direct_download(self, url: str) -> bool:
+        text = str(url or "").strip()
+        if not self._is_url(text):
+            return False
+        return self._is_public_share_url(text) or not self._is_assets_url(text)
+
+    @staticmethod
     def _is_localhost_url(url: str) -> bool:
         parsed = urlparse(str(url or "").strip())
         host = (parsed.hostname or "").lower()
@@ -96,18 +110,14 @@ class DownloadService:
     @staticmethod
     def _public_cache_filename(file_url: str, media_type: str = "image") -> str:
         parsed = urlparse(str(file_url or "").strip())
-        suffix = Path(parsed.path or "").suffix
-        filename = (
-            (parsed.netloc + (parsed.path or ""))
-            .lstrip("/")
-            .replace("/", "-")
-            .replace(":", "-")
-        )
-        if not filename:
-            filename = f"public-{media_type}"
-        if suffix and not filename.endswith(suffix):
-            filename = f"{filename}{suffix}"
-        return filename
+        suffix = Path(parsed.path or "").suffix.lower()
+        if suffix == ".jpeg":
+            suffix = ".jpg"
+        if not suffix:
+            suffix = ".jpg" if media_type == "image" else ".mp4"
+        digest = hashlib.sha1(str(file_url or "").encode("utf-8", errors="ignore")).hexdigest()
+        host = (parsed.hostname or "public").replace(".", "-")
+        return f"{host}-{digest[:24]}{suffix}"
 
     async def _download_public_url(
         self,
@@ -206,10 +216,14 @@ class DownloadService:
                 return f"![{image_id}]({data_uri})"
             final_url = await self.resolve_url(url, token, "image")
             return f"![{image_id}]({final_url})"
+        except AppException as e:
+            if getattr(e, "code", "") == "intermediate_image_skipped":
+                raise
+            logger.warning(f"Image render failed, skip image: {e}")
+            raise
         except Exception as e:
-            logger.warning(f"Image render failed, fallback to URL: {e}")
-            final_url = await self.resolve_url(url, token, "image")
-            return f"![{image_id}]({final_url})"
+            logger.warning(f"Image render failed, skip image: {e}")
+            raise
 
     async def render_video(
         self, video_url: str, token: str, thumbnail_url: str = ""
@@ -267,22 +281,39 @@ class DownloadService:
     async def parse_b64(self, file_path: str, token: str, media_type: str = "image") -> str:
         """Download and return data URI."""
         try:
-            if not isinstance(file_path, str) or not file_path.strip():
+            raw_value = str(file_path or "").strip()
+            if media_type == "image" and raw_value.lower().endswith("-part-0/image.jpg"):
+                raise AppException("Skip intermediate image", code="intermediate_image_skipped")
+            if not raw_value:
                 raise AppException("Invalid file path", code="invalid_file_path")
-            if file_path.startswith("data:"):
-                raise AppException("Invalid file path", code="invalid_file_path")
-            if not self._is_url(file_path):
+            if raw_value.startswith("data:"):
                 raise AppException("Invalid file path", code="invalid_file_path")
 
-            file_path = self._normalize_path(file_path)
-            lock_name = f"dl_b64_{hashlib.sha1(file_path.encode()).hexdigest()[:16]}"
+            is_full_url = self._is_url(raw_value)
+            direct_fetch = is_full_url and (not raw_value.startswith("https://assets.grok.com/")) and (not raw_value.startswith("http://assets.grok.com/"))
+            request_path = self._normalize_path(raw_value)
+            lock_key = raw_value if direct_fetch else request_path
+            lock_name = f"dl_b64_{hashlib.sha1(lock_key.encode()).hexdigest()[:16]}"
             lock_timeout = max(1, int(get_config("asset.download_timeout")))
             async with _get_download_semaphore():
                 async with _file_lock(lock_name, timeout=lock_timeout):
                     session = await self.create()
-                    response = await AssetsDownloadReverse.request(
-                        session, token, file_path
-                    )
+                    if direct_fetch:
+                        response = await session.get(
+                            raw_value,
+                            timeout=get_config("asset.download_timeout"),
+                            allow_redirects=True,
+                            stream=True,
+                        )
+                        if response.status_code != 200:
+                            raise AppException(
+                                f"Direct image fetch failed, status={response.status_code}",
+                                code="direct_image_fetch_failed",
+                            )
+                    else:
+                        response = await AssetsDownloadReverse.request(
+                            session, token, request_path
+                        )
 
             if hasattr(response, "aiter_content"):
                 data = bytearray()
@@ -304,19 +335,31 @@ class DownloadService:
             raise
 
     def _normalize_path(self, file_path: str) -> str:
-        """Normalize file path for download."""
+        """Normalize asset path for download.
+
+        Accepts either a full HTTP(S) assets URL or a relative asset path like
+        ``users/.../image.jpg``.
+        """
         if not isinstance(file_path, str) or not file_path.strip():
             raise AppException("Invalid file path", code="invalid_file_path")
-        parsed = urlparse(file_path)
-        if not (parsed.scheme and parsed.netloc and parsed.scheme in ["http", "https"]):
+
+        text = file_path.strip()
+        if text.startswith("data:"):
             raise AppException("Invalid file path", code="invalid_file_path")
-        path = parsed.path or ""
-        if parsed.query:
-            path = f"{path}?{parsed.query}"
-        file_path = path
-        if not file_path.startswith("/"):
-            file_path = f"/{file_path}"
-        return file_path
+
+        parsed = urlparse(text)
+        if parsed.scheme and parsed.netloc and parsed.scheme in ["http", "https"]:
+            path = parsed.path or ""
+            if parsed.query:
+                path = f"{path}?{parsed.query}"
+        else:
+            path = text
+
+        if not path:
+            raise AppException("Invalid file path", code="invalid_file_path")
+        if not path.startswith("/"):
+            path = f"/{path}"
+        return path
 
     async def download_file(self, file_path: str, token: str, media_type: str = "image") -> Tuple[Optional[Path], str]:
         """Download asset to local cache.
@@ -329,7 +372,7 @@ class DownloadService:
         Returns:
             Tuple[Optional[Path], str]: The path of the downloaded file and the MIME type.
         """
-        if self._is_public_share_url(file_path):
+        if self._should_direct_download(file_path):
             return await self._download_public_url(file_path, media_type)
 
         started_at = time.perf_counter()
