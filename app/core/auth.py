@@ -2,7 +2,7 @@
 API 认证模块
 """
 
-from typing import Optional
+from typing import Optional, List
 from fastapi import HTTPException, status, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
@@ -21,14 +21,16 @@ security = HTTPBearer(
 )
 
 
-def get_admin_api_key() -> str:
+def get_admin_api_keys() -> List[str]:
     """
-    获取后台 API Key。
+    获取客户端 API Keys。
 
-    为空时表示不启用后台接口认证。
+    支持单个 key，或逗号分隔的多个 key。
+    为空时表示不启用该类接口认证。
     """
     api_key = get_config("app.api_key", DEFAULT_API_KEY)
-    return api_key or ""
+    raw = str(api_key or "")
+    return [item.strip() for item in raw.split(",") if item and item.strip()]
 
 def get_app_key() -> str:
     """
@@ -61,8 +63,8 @@ async def verify_api_key(
 
     如果 config.toml 中未配置 api_key，则不启用认证。
     """
-    api_key = get_admin_api_key()
-    if not api_key:
+    api_keys = get_admin_api_keys()
+    if not api_keys:
         return None
 
     if not auth:
@@ -72,7 +74,7 @@ async def verify_api_key(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    if auth.credentials != api_key:
+    if auth.credentials not in api_keys:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication token",

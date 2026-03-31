@@ -4,7 +4,7 @@
 app_url = "http://127.0.0.1:8000"
 # 后台管理密码
 app_key = "grok2api"
-# API 调用密钥（可选）
+# API 调用密钥（可选，支持单个或逗号分隔多个密钥）
 api_key = ""
 # 是否启用 public 功能玩法
 public_enabled = false

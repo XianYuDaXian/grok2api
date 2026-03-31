@@ -129,7 +129,7 @@
     },
     "fields": {
       "app": {
-        "api_key": {"title": "API Key", "desc": "Token for calling Grok2API services (optional, supports multiple, comma-separated or array)."},
+        "api_key": {"title": "API Key", "desc": "Token for calling Grok2API services (optional, supports a single key or multiple comma-separated keys)."},
         "app_key": {"title": "Admin Password", "desc": "Password for logging into the Grok2API admin panel (required)."},
         "function_enabled": {"title": "Enable Function Access", "desc": "Whether to enable the function access entry (disabled means function pages are inaccessible)."},
         "function_key": {"title": "Function Password", "desc": "Access password for function pages (optional)."},

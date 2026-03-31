@@ -48,7 +48,7 @@ uv run main.py
 | 变量名 | 说明 | 默认值 |
 | :-- | :-- | :-- |
 | `APP_KEY` / `app.app_key` | 管理后台密码 | `grok2api` |
-| `API_KEY` / `app.api_key` | OpenAI 兼容 API Key | 空 |
+| `API_KEY` / `app.api_key` | OpenAI 兼容 API Key（支持单个或逗号分隔多个 Key） | 空 |
 | `PUBLIC_ENABLED` / `app.public_enabled` | 是否开启前端 Public 页面 | `false` |
 | `PUBLIC_KEY` / `app.public_key` | Public 页面调用密钥 | 空 |
 | `DATA_DIR` | 数据目录 | `./data` |
