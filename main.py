@@ -124,6 +124,10 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    @app.get("/healthy", include_in_schema=False)
+    async def healthy():
+        return {"status": "ok"}
+
     # CORS 配置
     app.add_middleware(
         CORSMiddleware,
