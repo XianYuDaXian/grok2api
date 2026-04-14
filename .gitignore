@@ -40,20 +40,14 @@ node_modules/
 
 # Environment Variables
 .env
-.env.local
-.env.*.local
 
 # Logs
 logs/
 *.log
 
 # Data
-data/*.json
-data/tmp/*
-data/.locks/*
-app/data/*.json
-app/data/tmp/*
-app/data/.locks/*
+data/
+app/data/
 
 # Testing
 .pytest_cache/
@@ -61,5 +55,6 @@ app/data/.locks/*
 htmlcov/
 
 # Project specific
+.ace-tool/
 config.local.toml
 data/config.toml
