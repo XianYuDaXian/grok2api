@@ -29,7 +29,7 @@
 
       <div class="h-px bg-[var(--border)] my-6"></div>
 
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
         <div class="stat-card cache-card" data-type="image">
           <div class="flex items-start justify-between">
             <div>
@@ -63,6 +63,27 @@
             <div class="text-right">
               <div id="video-size" class="text-xs font-mono text-[var(--accents-4)]">0 MB</div>
               <button onclick="clearCache('video')" class="cache-action-btn mt-3" title="清空缓存">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="stat-card cache-card" data-type="chat_upload">
+          <div class="flex items-start justify-between">
+            <div>
+              <div class="cache-stat-label">上传图片缓存</div>
+              <div class="cache-stat-value">
+                <span id="upload-img-count">0</span>
+                <span class="text-xs text-[var(--accents-4)] ml-1">个文件</span>
+              </div>
+            </div>
+            <div class="text-right">
+              <div id="upload-img-size" class="text-xs font-mono text-[var(--accents-4)]">0 MB</div>
+              <button onclick="clearCache('chat_upload')" class="cache-action-btn mt-3" title="清空缓存">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                     d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
@@ -120,7 +141,25 @@
                   <th class="w-24 text-center">操作</th>
                 </tr>
               </thead>
-              <tbody id="local-video-body"></tbody>
+            <tbody id="local-video-body"></tbody>
+            </table>
+          </div>
+        </div>
+        <div id="local-upload-image-list" class="cache-list hidden">
+          <div class="rounded-lg overflow-hidden bg-white overflow-x-auto">
+            <table class="geist-table min-w-[600px]">
+              <thead>
+                <tr>
+                  <th class="w-10 text-center">
+                    <input id="local-upload-image-select-all" type="checkbox" class="checkbox" onchange="toggleLocalSelectAll('chat_upload', this)">
+                  </th>
+                  <th class="w-108 text-left">文件</th>
+                  <th class="w-32 text-left">大小</th>
+                  <th class="w-48 text-left">时间</th>
+                  <th class="w-24 text-center">操作</th>
+                </tr>
+              </thead>
+              <tbody id="local-upload-image-body"></tbody>
             </table>
           </div>
         </div>
@@ -206,7 +245,7 @@
   <script src="/static/common/js/header.js?v=0.3.1"></script>
   <script src="/static/common/js/footer.js?v=0.3.0"></script>
   <script src="/static/common/js/toast.js"></script>
-  <script src="/static/admin/js/cache.js?v=0.3.2"></script>
+  <script src="/static/admin/js/cache.js?v=0.3.3"></script>
   <script src="/static/common/js/draggable.js"></script>
 </body>
 

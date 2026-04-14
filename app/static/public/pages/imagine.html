@@ -19,7 +19,7 @@
   <link href="/static/vendor/geist/geist-mono.css" rel="stylesheet">
   <script src="/static/common/js/theme.js?v=0.1.0"></script>
   <link href="/static/common/css/common.css?v=0.3.8" rel="stylesheet">
-  <link href="/static/public/css/imagine.css?v=0.5.1" rel="stylesheet">
+  <link href="/static/public/css/imagine.css?v=0.5.2" rel="stylesheet">
   <link href="/static/common/css/toast.css" rel="stylesheet">
 </head>
 
@@ -112,6 +112,13 @@
                       <option value="true">开启</option>
                       <option value="false">关闭</option>
                     </select>
+                  </div>
+                  <div class="settings-field">
+                    <label class="field-label">生成模式</label>
+                    <div class="mode-switch" role="group" aria-label="Imagine quality mode">
+                      <button class="mode-btn quality-btn active" data-pro="false" type="button">快速</button>
+                      <button class="mode-btn quality-btn" data-pro="true" type="button">质量</button>
+                    </div>
                   </div>
                   <div class="settings-folder">
                     <label class="field-label">保存位置</label>
@@ -352,7 +359,7 @@
   <script src="/static/common/js/prompt-enhancer.js?v=0.1.15"></script>
   <script src="/static/common/js/pwa.js?v=0.1.1"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-  <script src="/static/public/js/imagine.js?v=0.5.0"></script>
+  <script src="/static/public/js/imagine.js?v=0.5.1"></script>
 </body>
 
 </html>

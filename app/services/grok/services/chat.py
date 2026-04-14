@@ -11,7 +11,7 @@ import orjson
 from curl_cffi.requests import AsyncSession
 from curl_cffi.requests.errors import RequestsError
 
-from app.core.logger import logger
+from app.core.logger import logger, LOG_DIR
 from app.core.config import get_config
 from app.core.exceptions import (
     AppException,
@@ -273,6 +273,113 @@ def extract_render_payload(model_response: Dict[str, Any]) -> Dict[str, Any] | N
         "rawModelResponse": model_response,
         "extraImages": proc_base._collect_images(model_response),
     }
+
+
+def _extract_stream_response(data: Any) -> Dict[str, Any] | None:
+    """安全提取流式事件中的 response，避免上游返回 null 时崩溃。"""
+    if not isinstance(data, dict):
+        return None
+    result = data.get("result")
+    if not isinstance(result, dict):
+        return None
+    response = result.get("response")
+    if not isinstance(response, dict):
+        return None
+    return response
+
+
+def _parse_card_attachments_json(card_attachments: Any) -> List[Dict[str, Any]]:
+    parsed: List[Dict[str, Any]] = []
+    for raw in card_attachments or []:
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        try:
+            item = orjson.loads(raw)
+        except orjson.JSONDecodeError:
+            parsed.append({"_raw": raw})
+            continue
+        if isinstance(item, dict):
+            parsed.append(item)
+    return parsed
+
+
+def _build_capture_event(resp: Dict[str, Any], model: str, phase: str, seq: int) -> Dict[str, Any]:
+    event: Dict[str, Any] = {
+        "type": "app_chat_capture",
+        "phase": phase,
+        "seq": seq,
+        "model": model,
+        "responseId": resp.get("responseId"),
+        "rolloutId": resp.get("rolloutId"),
+        "messageTag": resp.get("messageTag"),
+        "isThinking": bool(resp.get("isThinking")),
+    }
+
+    token = resp.get("token")
+    if token is not None:
+        event["tokenPreview"] = str(token)[:300]
+
+    if llm := resp.get("llmInfo"):
+        if isinstance(llm, dict):
+            event["llmInfo"] = llm
+
+    if tool_card := resp.get("toolUsageCard"):
+        event["toolUsageCardId"] = (
+            str(resp.get("toolUsageCardId") or tool_card.get("toolUsageCardId") or "").strip()
+        )
+        event["toolUsageCard"] = tool_card
+
+    if card := resp.get("cardAttachment"):
+        if isinstance(card, dict):
+            event["cardAttachment"] = card
+            json_data = card.get("jsonData")
+            if isinstance(json_data, str) and json_data.strip():
+                try:
+                    event["cardAttachmentJsonParsed"] = orjson.loads(json_data)
+                except orjson.JSONDecodeError:
+                    event["cardAttachmentJsonParsed"] = {"_raw": json_data}
+
+    if web_search_results := resp.get("webSearchResults"):
+        event["webSearchResults"] = web_search_results
+
+    if mr := resp.get("modelResponse"):
+        if isinstance(mr, dict):
+            event["modelResponse"] = {
+                "responseId": mr.get("responseId"),
+                "message": mr.get("message"),
+                "cardAttachmentsJsonParsed": _parse_card_attachments_json(
+                    mr.get("cardAttachmentsJson")
+                ),
+                "steps": mr.get("steps"),
+                "webSearchResults": mr.get("webSearchResults"),
+                "metadata": mr.get("metadata"),
+            }
+            if sources_payload := extract_sources_payload(mr):
+                event["sourcesPayload"] = sources_payload
+            if render_payload := extract_render_payload(mr):
+                event["renderingPayload"] = render_payload
+
+    return event
+
+
+def _capture_app_chat_event(resp: Dict[str, Any], model: str, phase: str, seq: int) -> None:
+    if not get_config("app.chat_capture_enabled", get_config("chat.capture_enabled", False)):
+        return
+
+    capture_file = get_config(
+        "app.chat_capture_file",
+        get_config("chat.capture_file", str(LOG_DIR / "app_chat_capture.jsonl")),
+    ) or str(LOG_DIR / "app_chat_capture.jsonl")
+    try:
+        event = _build_capture_event(resp, model, phase, seq)
+        with open(capture_file, "ab") as f:
+            f.write(orjson.dumps(event))
+            f.write(b"\n")
+    except Exception as e:
+        logger.warning(
+            f"App chat capture write failed: {e}",
+            extra={"model": model, "error_type": type(e).__name__},
+        )
 
 
 def _get_chat_semaphore() -> asyncio.Semaphore:
@@ -825,6 +932,7 @@ class StreamProcessor(proc_base.BaseProcessor):
         self._source_order: List[str] = []
         self._citation_sources: List[Dict[str, str]] = []
         self._image_sources: List[Dict[str, str]] = []
+        self._capture_seq: int = 0
 
     def _filter_tool_card(self, token: str) -> str:
         if not token or not self.tool_usage_enabled:
@@ -1077,7 +1185,11 @@ class StreamProcessor(proc_base.BaseProcessor):
                 except orjson.JSONDecodeError:
                     continue
 
-                resp = data.get("result", {}).get("response", {})
+                resp = _extract_stream_response(data)
+                if resp is None:
+                    continue
+                self._capture_seq += 1
+                _capture_app_chat_event(resp, self.model, "stream", self._capture_seq)
                 is_thinking = bool(resp.get("isThinking"))
                 # isThinking controls <think> tagging
                 # when absent, treat as False
@@ -1164,10 +1276,15 @@ class StreamProcessor(proc_base.BaseProcessor):
                             image = card_data.get("image") or {}
                             original = image.get("original")
                             title = image.get("title") or ""
-                            if not original and "image_chunk" in card_data:
-                                original = card_data["image_chunk"].get("imageUrl")
+                            image_chunk = (
+                                card_data.get("image_chunk")
+                                if isinstance(card_data.get("image_chunk"), dict)
+                                else {}
+                            )
+                            if not original and image_chunk:
+                                original = image_chunk.get("imageUrl")
                                 if not title:
-                                    title = card_data["image_chunk"].get("imageTitle") or "Generated Image"
+                                    title = image_chunk.get("imageTitle") or "Generated Image"
                             if original:
                                 async for chunk in self._close_think_block():
                                     yield chunk
@@ -1365,6 +1482,7 @@ class CollectProcessor(proc_base.BaseProcessor):
         final_model_response: Dict[str, Any] = {}
         idle_timeout = get_config("chat.stream_timeout")
         first_item_timeout = get_config("chat.first_token_timeout")
+        capture_seq = 0
 
         try:
             async for line in proc_base._with_idle_timeout(
@@ -1378,7 +1496,11 @@ class CollectProcessor(proc_base.BaseProcessor):
                 except orjson.JSONDecodeError:
                     continue
 
-                resp = data.get("result", {}).get("response", {})
+                resp = _extract_stream_response(data)
+                if resp is None:
+                    continue
+                capture_seq += 1
+                _capture_app_chat_event(resp, self.model, "collect", capture_seq)
 
                 if (llm := resp.get("llmInfo")) and not fingerprint:
                     fingerprint = llm.get("modelHash", "")

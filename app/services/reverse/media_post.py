@@ -75,18 +75,25 @@ class MediaPostReverse:
         post_payload = {}
         share_payload = {}
         share_link = ""
+        create_public_share_link = bool(get_config("asset.create_public_share_link", True))
         try:
             post_resp = await MediaPostReverse.get(session, token, post_text)
             post_payload = post_resp.json() if post_resp is not None else {}
         except Exception as e:
             logger.warning(f"MediaPost metadata get failed: post_id={post_text}, error={e}")
-        try:
-            share_resp = await MediaPostReverse.create_link(session, token, post_text)
-            share_payload = share_resp.json() if share_resp is not None else {}
-            if isinstance(share_payload, dict):
-                share_link = str(share_payload.get("shareLink") or "").strip()
-        except Exception as e:
-            logger.warning(f"MediaPost metadata create-link failed: post_id={post_text}, error={e}")
+        if create_public_share_link:
+            try:
+                share_resp = await MediaPostReverse.create_link(session, token, post_text)
+                share_payload = share_resp.json() if share_resp is not None else {}
+                if isinstance(share_payload, dict):
+                    share_link = str(share_payload.get("shareLink") or "").strip()
+            except Exception as e:
+                logger.warning(f"MediaPost metadata create-link failed: post_id={post_text}, error={e}")
+        else:
+            logger.info(
+                "MediaPost metadata create-link skipped by config: post_id={}",
+                post_text,
+            )
 
         canonical_post_id = post_text
         if share_link:

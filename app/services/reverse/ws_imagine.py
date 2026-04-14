@@ -40,7 +40,7 @@ class ImagineWebSocketReverse:
         url_lower = (url or "").lower()
         if url_lower.endswith((".jpg", ".jpeg")):
             return True
-        return blob_size > final_min_bytes
+        return False
 
     def _classify_image(self, url: str, blob: str, final_min_bytes: int, medium_min_bytes: int) -> Optional[Dict[str, object]]:
         if not url or not blob:
@@ -68,7 +68,14 @@ class ImagineWebSocketReverse:
             "is_final": is_final,
         }
 
-    def _build_request_message(self, request_id: str, prompt: str, aspect_ratio: str, enable_nsfw: bool) -> Dict[str, object]:
+    def _build_request_message(
+        self,
+        request_id: str,
+        prompt: str,
+        aspect_ratio: str,
+        enable_nsfw: bool,
+        enable_pro: bool,
+    ) -> Dict[str, object]:
         return {
             "type": "conversation.item.create",
             "timestamp": int(time.time() * 1000),
@@ -83,6 +90,7 @@ class ImagineWebSocketReverse:
                             "section_count": 0,
                             "is_kids_mode": False,
                             "enable_nsfw": enable_nsfw,
+                            "enable_pro": enable_pro,
                             "skip_upsampler": False,
                             "is_initial": False,
                             "aspect_ratio": aspect_ratio,
@@ -100,18 +108,19 @@ class ImagineWebSocketReverse:
         aspect_ratio: str = "2:3",
         n: int = 1,
         enable_nsfw: bool = True,
+        enable_pro: bool = False,
         max_retries: Optional[int] = None,
     ) -> AsyncGenerator[Dict[str, object], None]:
         retries = max(1, max_retries if max_retries is not None else 1)
         logger.info(
-            f"Image generation: prompt='{prompt[:50]}...', n={n}, ratio={aspect_ratio}, nsfw={enable_nsfw}"
+            f"Image generation: prompt='{prompt[:50]}...', n={n}, ratio={aspect_ratio}, nsfw={enable_nsfw}, pro={enable_pro}"
         )
 
         for attempt in range(retries):
             try:
                 yielded_any = False
                 async for item in self._stream_once(
-                    token, prompt, aspect_ratio, n, enable_nsfw
+                    token, prompt, aspect_ratio, n, enable_nsfw, enable_pro
                 ):
                     yielded_any = True
                     yield item
@@ -142,13 +151,13 @@ class ImagineWebSocketReverse:
         aspect_ratio: str,
         n: int,
         enable_nsfw: bool,
+        enable_pro: bool,
     ) -> AsyncGenerator[Dict[str, object], None]:
         request_id = str(uuid.uuid4())
         headers = build_ws_headers(token=token)
         timeout = float(get_config("image.timeout"))
         stream_timeout = float(get_config("image.stream_timeout"))
         final_timeout = float(get_config("image.final_timeout"))
-        blocked_grace = min(10.0, final_timeout)
         final_min_bytes = int(get_config("image.final_min_bytes"))
         medium_min_bytes = int(get_config("image.medium_min_bytes"))
 
@@ -179,11 +188,11 @@ class ImagineWebSocketReverse:
         try:
             async with conn as ws:
                 message = self._build_request_message(
-                    request_id, prompt, aspect_ratio, enable_nsfw
+                    request_id, prompt, aspect_ratio, enable_nsfw, enable_pro
                 )
                 logger.info(
                     "Imagine WS request prepared: "
-                    f"request_id={request_id}, ratio={aspect_ratio}, nsfw={enable_nsfw}"
+                    f"request_id={request_id}, ratio={aspect_ratio}, nsfw={enable_nsfw}, pro={enable_pro}"
                 )
                 await ws.send_json(message)
                 logger.info(f"WebSocket request sent: {prompt[:80]}...")
@@ -198,12 +207,6 @@ class ImagineWebSocketReverse:
                         ws_msg = await asyncio.wait_for(ws.receive(), timeout=5.0)
                     except asyncio.TimeoutError:
                         now = time.monotonic()
-                        if (
-                            medium_received_time
-                            and completed == 0
-                            and now - medium_received_time > blocked_grace
-                        ):
-                            raise _BlockedError()
                         if completed > 0 and now - last_activity > 10:
                             logger.info(
                                 f"WebSocket idle timeout, collected {completed} images"
@@ -258,13 +261,6 @@ class ImagineWebSocketReverse:
                         if completed >= n:
                             logger.info(f"WebSocket collected {completed} final images")
                             break
-
-                        if (
-                            medium_received_time
-                            and completed == 0
-                            and time.monotonic() - medium_received_time > final_timeout
-                        ):
-                            raise _BlockedError()
 
                     elif ws_msg.type in (
                         aiohttp.WSMsgType.CLOSED,

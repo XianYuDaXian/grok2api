@@ -50,7 +50,10 @@ const LOCALE_MAP = {
     "stream": { title: "流式响应", desc: "是否默认启用流式输出。" },
     "thinking": { title: "思维链", desc: "是否默认启用思维链输出。" },
     "dynamic_statsig": { title: "动态指纹", desc: "是否默认启用动态生成 Statsig 指纹。" },
-    "filter_tags": { title: "过滤标签", desc: "设置自动过滤 Grok 响应中的特殊标签。" }
+    "filter_tags": { title: "过滤标签", desc: "设置自动过滤 Grok 响应中的特殊标签。" },
+    "app_log_enabled": { title: "应用运行日志", desc: "控制是否将服务运行日志写入 logs/app_YYYY-MM-DD.log，用于排查启动、接口错误和系统异常。" },
+    "chat_capture_enabled": { title: "对话抓包日志", desc: "控制是否记录对话上游原始响应到抓包文件，用于排查图片来源、卡片附件和搜索结果关联问题。" },
+    "chat_capture_file": { title: "对话抓包文件", desc: "对话抓包日志的写入路径，建议保留在 logs 目录下统一管理。" }
   },
 
 
@@ -104,7 +107,8 @@ const LOCALE_MAP = {
     "upstream": { title: "上游实现", desc: "图片生成优先使用的上游实现：rest（app-chat）或 ws（旧 imagine 通道）。默认 rest。" },
     "medium_min_bytes": { title: "中等图最小字节", desc: "判定中等质量图的最小字节数。" },
     "final_min_bytes": { title: "最终图最小字节", desc: "判定最终图的最小字节数（通常 JPG > 100KB）。" },
-    "allow_ws_fallback": { title: "允许 WS 回退", desc: "图片生成在 app-chat 失败时，是否允许回退到旧 ws_imagine 通道。默认关闭，仅排障时开启。" }
+    "allow_ws_fallback": { title: "允许 WS 回退", desc: "图片生成在 app-chat 失败时，是否允许回退到旧 ws_imagine 通道。默认关闭，仅排障时开启。" },
+    "edit_return_first_image_immediately": { title: "编辑首图直返", desc: "开启后，管理页图片编辑接口拿到第一张结果图就立即返回，不再等待后续第二张图。" }
   },
 
 
@@ -119,7 +123,8 @@ const LOCALE_MAP = {
     "list_batch_size": { title: "查询批次大小", desc: "单次查询可处理的 Token 数量。推荐 10。" },
     "delete_concurrent": { title: "删除并发", desc: "资产删除接口的最大并发数。推荐 10。" },
     "delete_timeout": { title: "删除超时", desc: "资产删除接口超时时间（秒）。推荐 60。" },
-    "delete_batch_size": { title: "删除批次大小", desc: "单次删除可处理的 Token 数量。推荐 10。" }
+    "delete_batch_size": { title: "删除批次大小", desc: "单次删除可处理的 Token 数量。推荐 10。" },
+    "create_public_share_link": { title: "创建公共分享链接", desc: "开启后，图片、图片编辑和视频生成成功时会自动创建公共分享链接并写入元数据。" }
   },
 
 
@@ -184,6 +189,9 @@ const CF_MANAGED_PROXY_KEYS = ['cf_clearance', 'browser', 'user_agent'];
 const CF_REFRESH_SUB_KEYS = ['flaresolverr_url', 'refresh_interval', 'timeout'];
 
 const SECTION_ORDER = new Map(Object.keys(LOCALE_MAP).map((key, index) => [key, index]));
+const HIDDEN_CONFIG_KEYS = new Map([
+  ['chat', new Set(['capture_enabled', 'capture_file'])],
+]);
 
 function getText(section, key) {
   if (LOCALE_MAP[section] && LOCALE_MAP[section][key]) {
@@ -376,10 +384,11 @@ function renderConfig(data) {
     const keyOrder = localeSection ? new Map(Object.keys(localeSection).map((k, i) => [k, i])) : null;
 
     const allKeys = sortByOrder(Object.keys(items), keyOrder);
+    const hiddenKeys = HIDDEN_CONFIG_KEYS.get(section) || new Set();
     const visibleKeys = allKeys.filter(key => {
       if (section === 'proxy' && key === 'cf_cookies') return false;
       if (section === 'app' && key === 'custom_instruction') return false;
-      return true;
+      return !hiddenKeys.has(key);
     });
 
     if (visibleKeys.length > 0) {
@@ -391,7 +400,7 @@ function renderConfig(data) {
 
       if (section === 'proxy') {
         const actionRow = document.createElement('div');
-        actionRow.className = 'flex items-center gap-2 mt-3 mb-4';
+        actionRow.className = 'config-section-actions';
 
         const refreshBtn = document.createElement('button');
         refreshBtn.type = 'button';
@@ -410,7 +419,6 @@ function renderConfig(data) {
         actionRow.appendChild(refreshBtn);
         header.appendChild(actionRow);
       }
-      
       // 添加部分说明（如果有）
       if (SECTION_DESCRIPTIONS[section]) {
         const descP = document.createElement('p');
@@ -430,6 +438,27 @@ function renderConfig(data) {
       });
 
       card.appendChild(grid);
+      if (section === 'app') {
+        const footerActions = document.createElement('div');
+        footerActions.className = 'config-footer-actions';
+        const clearLogsBtn = document.createElement('button');
+        clearLogsBtn.type = 'button';
+        clearLogsBtn.id = 'clear-logs-btn';
+        clearLogsBtn.className = 'geist-button-danger gap-2';
+        clearLogsBtn.innerHTML = `
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 6h18"></path>
+            <path d="M8 6V4h8v2"></path>
+            <path d="M19 6l-1 14H6L5 6"></path>
+            <path d="M10 11v6"></path>
+            <path d="M14 11v6"></path>
+          </svg>
+          清空日志文件夹
+        `;
+        clearLogsBtn.addEventListener('click', clearLogsDirectory);
+        card.appendChild(footerActions);
+        footerActions.appendChild(clearLogsBtn);
+      }
       if (grid.children.length > 0) {
         fragment.appendChild(card);
       }
@@ -467,6 +496,56 @@ async function manualRefreshCfClearance() {
     await loadData();
   } catch (e) {
     showToast(`刷新失败: ${e.message || e}`, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = originalHtml;
+  }
+}
+
+function formatBytes(bytes) {
+  const size = Number(bytes || 0);
+  if (!size) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = size;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
+}
+
+async function clearLogsDirectory() {
+  const btn = byId('clear-logs-btn');
+  if (!btn) return;
+  const confirmed = window.confirm('将清空 logs 文件夹中的全部日志文件，是否继续？');
+  if (!confirmed) return;
+
+  const originalHtml = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = `
+    <svg class="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M21 12a9 9 0 1 1-6.219-8.56"></path>
+    </svg>
+    清理中...
+  `;
+
+  try {
+    const res = await fetch('/v1/admin/config/clear-logs', {
+      method: 'POST',
+      headers: buildAuthHeaders(apiKey)
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || data.message || `HTTP ${res.status}`);
+    }
+    const info = data.data || {};
+    const filesText = Number(info.deleted_files || 0);
+    const dirsText = Number(info.deleted_dirs || 0);
+    const bytesText = formatBytes(info.released_bytes || 0);
+    showToast(`已清空日志：${filesText} 个文件，${dirsText} 个目录，释放 ${bytesText}`, 'success');
+  } catch (e) {
+    showToast(`清空失败: ${e.message || e}`, 'error');
   } finally {
     btn.disabled = false;
     btn.innerHTML = originalHtml;

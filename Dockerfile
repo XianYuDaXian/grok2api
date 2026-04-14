@@ -23,6 +23,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 COPY config.defaults.toml ./
+# 前端资源以预编译静态文件形式随 app 一起复制，镜像内不引入 Node 工具链
 COPY app ./app
 COPY main.py ./
 COPY scripts ./scripts

@@ -6,7 +6,8 @@ const accountMap = new Map();
 const selectedTokens = new Set();
 const selectedLocal = {
   image: new Set(),
-  video: new Set()
+  video: new Set(),
+  chat_upload: new Set()
 };
 const ui = {};
 const byId = (id) => document.getElementById(id);
@@ -17,11 +18,14 @@ let lastBatchAction = null;
 let isLocalDeleting = false;
 const cacheListState = {
   image: { loaded: false, visible: false, items: [] },
-  video: { loaded: false, visible: false, items: [] }
+  video: { loaded: false, visible: false, items: [] },
+  chat_upload: { loaded: false, visible: false, items: [] }
 };
 const UI_MAP = {
   imgCount: 'img-count',
   imgSize: 'img-size',
+  uploadImgCount: 'upload-img-count',
+  uploadImgSize: 'upload-img-size',
   videoCount: 'video-count',
   videoSize: 'video-size',
   onlineCount: 'online-count',
@@ -31,6 +35,7 @@ const UI_MAP = {
   accountEmpty: 'account-empty',
   selectAll: 'select-all',
   localImageSelectAll: 'local-image-select-all',
+  localUploadImageSelectAll: 'local-upload-image-select-all',
   localVideoSelectAll: 'local-video-select-all',
   selectedCount: 'selected-count',
   batchActions: 'batch-actions',
@@ -39,8 +44,10 @@ const UI_MAP = {
   deleteBtn: 'btn-delete-assets',
   localCacheLists: 'local-cache-lists',
   localImageList: 'local-image-list',
+  localUploadImageList: 'local-upload-image-list',
   localVideoList: 'local-video-list',
   localImageBody: 'local-image-body',
+  localUploadImageBody: 'local-upload-image-body',
   localVideoBody: 'local-video-body',
   onlineAssetsTable: 'online-assets-table',
   batchProgress: 'batch-progress',
@@ -457,6 +464,9 @@ function applyStatsData(data, merge = false) {
 
   setText(ui.imgCount, data.local_image.count);
   setText(ui.imgSize, `${data.local_image.size_mb} MB`);
+  const uploadStats = data.local_upload_image || { count: 0, size_mb: 0 };
+  setText(ui.uploadImgCount, uploadStats.count);
+  setText(ui.uploadImgSize, `${uploadStats.size_mb} MB`);
   setText(ui.videoCount, data.local_video.count);
   setText(ui.videoSize, `${data.local_video.size_mb} MB`);
   setText(ui.onlineCount, data.online.count);
@@ -641,7 +651,12 @@ function renderAccountTable(data) {
 }
 
 async function clearCache(type) {
-  const ok = await confirmAction(`确定要清空本地${type === 'image' ? '图片' : '视频'}缓存吗？`, { okText: '清空' });
+  const labelMap = {
+    image: '图片',
+    video: '视频',
+    chat_upload: '上传图片'
+  };
+  const ok = await confirmAction(`确定要清空本地${labelMap[type] || '文件'}缓存吗？`, { okText: '清空' });
   if (!ok) return;
 
   try {
@@ -734,7 +749,11 @@ function toggleLocalSelectAll(type, checkbox) {
 }
 
 function syncLocalRowCheckboxes(type) {
-  const body = type === 'image' ? ui.localImageBody : ui.localVideoBody;
+  const body = type === 'image'
+    ? ui.localImageBody
+    : type === 'chat_upload'
+      ? ui.localUploadImageBody
+      : ui.localVideoBody;
   if (!body) return;
   const set = selectedLocal[type];
   const checkboxes = body.querySelectorAll('input[type="checkbox"].checkbox');
@@ -749,7 +768,11 @@ function syncLocalRowCheckboxes(type) {
 }
 
 function syncLocalSelectAllState(type) {
-  const selectAll = type === 'image' ? ui.localImageSelectAll : ui.localVideoSelectAll;
+  const selectAll = type === 'image'
+    ? ui.localImageSelectAll
+    : type === 'chat_upload'
+      ? ui.localUploadImageSelectAll
+      : ui.localVideoSelectAll;
   if (!selectAll) return;
   const total = cacheListState[type]?.items?.length || 0;
   const selected = selectedLocal[type]?.size || 0;
@@ -944,11 +967,13 @@ async function showCacheSection(type) {
   }
   if (type === 'image') {
     cacheListState.image.visible = true;
+    cacheListState.chat_upload.visible = false;
     cacheListState.video.visible = false;
     if (cacheListState.image.loaded) renderLocalCacheList('image', cacheListState.image.items);
     else await loadLocalCacheList('image');
     if (ui.localCacheLists) ui.localCacheLists.classList.remove('hidden');
     if (ui.localImageList) ui.localImageList.classList.remove('hidden');
+    if (ui.localUploadImageList) ui.localUploadImageList.classList.add('hidden');
     if (ui.localVideoList) ui.localVideoList.classList.add('hidden');
     if (ui.onlineAssetsTable) ui.onlineAssetsTable.classList.add('hidden');
     updateToolbarForSection();
@@ -957,20 +982,38 @@ async function showCacheSection(type) {
   if (type === 'video') {
     cacheListState.video.visible = true;
     cacheListState.image.visible = false;
+    cacheListState.chat_upload.visible = false;
     if (cacheListState.video.loaded) renderLocalCacheList('video', cacheListState.video.items);
     else await loadLocalCacheList('video');
     if (ui.localCacheLists) ui.localCacheLists.classList.remove('hidden');
     if (ui.localVideoList) ui.localVideoList.classList.remove('hidden');
     if (ui.localImageList) ui.localImageList.classList.add('hidden');
+    if (ui.localUploadImageList) ui.localUploadImageList.classList.add('hidden');
+    if (ui.onlineAssetsTable) ui.onlineAssetsTable.classList.add('hidden');
+    updateToolbarForSection();
+    return;
+  }
+  if (type === 'chat_upload') {
+    cacheListState.chat_upload.visible = true;
+    cacheListState.image.visible = false;
+    cacheListState.video.visible = false;
+    if (cacheListState.chat_upload.loaded) renderLocalCacheList('chat_upload', cacheListState.chat_upload.items);
+    else await loadLocalCacheList('chat_upload');
+    if (ui.localCacheLists) ui.localCacheLists.classList.remove('hidden');
+    if (ui.localUploadImageList) ui.localUploadImageList.classList.remove('hidden');
+    if (ui.localImageList) ui.localImageList.classList.add('hidden');
+    if (ui.localVideoList) ui.localVideoList.classList.add('hidden');
     if (ui.onlineAssetsTable) ui.onlineAssetsTable.classList.add('hidden');
     updateToolbarForSection();
     return;
   }
   if (type === 'online') {
     cacheListState.image.visible = false;
+    cacheListState.chat_upload.visible = false;
     cacheListState.video.visible = false;
     if (ui.localCacheLists) ui.localCacheLists.classList.add('hidden');
     if (ui.localImageList) ui.localImageList.classList.add('hidden');
+    if (ui.localUploadImageList) ui.localUploadImageList.classList.add('hidden');
     if (ui.localVideoList) ui.localVideoList.classList.add('hidden');
     if (ui.onlineAssetsTable) ui.onlineAssetsTable.classList.remove('hidden');
     updateToolbarForSection();
@@ -982,7 +1025,11 @@ async function toggleCacheList(type) {
 }
 
 async function loadLocalCacheList(type) {
-  const body = type === 'image' ? ui.localImageBody : ui.localVideoBody;
+  const body = type === 'image'
+    ? ui.localImageBody
+    : type === 'chat_upload'
+      ? ui.localUploadImageBody
+      : ui.localVideoBody;
   if (!body) return;
   body.innerHTML = `<tr><td colspan="5">加载中...</td></tr>`;
   try {
@@ -1010,7 +1057,11 @@ async function loadLocalCacheList(type) {
 }
 
 function renderLocalCacheList(type, items) {
-  const body = type === 'image' ? ui.localImageBody : ui.localVideoBody;
+  const body = type === 'image'
+    ? ui.localImageBody
+    : type === 'chat_upload'
+      ? ui.localUploadImageBody
+      : ui.localVideoBody;
   if (!body) return;
   if (!items || items.length === 0) {
     body.innerHTML = `<tr><td colspan="5" class="table-empty">暂无文件</td></tr>`;
@@ -1123,13 +1174,13 @@ function renderLocalCacheList(type, items) {
 
 function viewLocalFile(type, name) {
   const safeName = encodeURIComponent(name);
-  const url = type === 'image' ? `/v1/files/image/${safeName}` : `/v1/files/video/${safeName}`;
+  const url = type === 'video' ? `/v1/files/video/${safeName}` : `/v1/files/image/${safeName}`;
   window.open(url, '_blank');
 }
 
 function buildLocalFileUrl(type, name) {
   const safeName = encodeURIComponent(name);
-  return type === 'image' ? `/v1/files/image/${safeName}` : `/v1/files/video/${safeName}`;
+  return type === 'video' ? `/v1/files/video/${safeName}` : `/v1/files/image/${safeName}`;
 }
 
 function isIosBrowser() {

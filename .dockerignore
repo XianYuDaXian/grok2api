@@ -3,6 +3,12 @@ __pycache__
 *.pyo
 *.pyd
 .Python
+.codex
+nginx
+.tmp-toolify
+node_modules
+package.json
+package-lock.json
 .env
 .env.*
 .git
@@ -14,3 +20,5 @@ logs
 /data/tmp
 /data/tmp/*
 /tests
+/deploy
+/app/static/public/src

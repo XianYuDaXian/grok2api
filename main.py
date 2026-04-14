@@ -49,9 +49,9 @@ from fastapi.staticfiles import StaticFiles
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    # 在 worker 启动阶段初始化日志，避免 Granian 下模块导入时绑定的标准流失效。
+    # 启动早期先仅初始化控制台日志，配置加载后再按配置决定是否写文件。
     setup_logging(
-        level=os.getenv("LOG_LEVEL", "INFO"), json_console=False, file_logging=True
+        level=os.getenv("LOG_LEVEL", "INFO"), json_console=False, file_logging=False
     )
 
     # 1. 注册服务默认配置
@@ -62,6 +62,11 @@ async def lifespan(app: FastAPI):
 
     # 2. 加载配置
     await config.load()
+    setup_logging(
+        level=os.getenv("LOG_LEVEL", "INFO"),
+        json_console=False,
+        file_logging=get_config("app.app_log_enabled", True),
+    )
 
     # 3. 启动服务显示
     logger.info("Starting Grok2API...")

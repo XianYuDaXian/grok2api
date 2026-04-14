@@ -185,6 +185,48 @@ class UploadService:
         return mime or fallback
 
     @staticmethod
+    def _is_loopback_host(hostname: str) -> bool:
+        host = str(hostname or "").strip().lower()
+        return host in {"127.0.0.1", "localhost", "::1"}
+
+    @staticmethod
+    def _resolve_internal_file_ref(url: str) -> Optional[Tuple[str, str]]:
+        """识别本站 /v1/files 路径，直接回源本地缓存文件。"""
+        try:
+            parsed = urlparse(url)
+        except Exception:
+            return None
+
+        path = str(parsed.path or "").strip()
+        if not path.startswith("/v1/files/"):
+            return None
+
+        parts = path.strip("/").split("/", 3)
+        if len(parts) < 4:
+            return None
+
+        app_url = str(get_config("app.app_url") or "").strip()
+        app_host = ""
+        if app_url:
+            try:
+                app_host = str(urlparse(app_url).hostname or "").strip().lower()
+            except Exception:
+                app_host = ""
+
+        req_host = str(parsed.hostname or "").strip().lower()
+        if req_host and not (
+            UploadService._is_loopback_host(req_host)
+            or (app_host and req_host == app_host)
+        ):
+            return None
+
+        local_type = parts[2]
+        name = parts[3].replace("/", "-")
+        if not local_type or not name:
+            return None
+        return local_type, name
+
+    @staticmethod
     async def _encode_b64_stream(chunks: AsyncIterator[bytes]) -> str:
         parts = []
         remain = b""
@@ -245,20 +287,16 @@ class UploadService:
     async def parse_b64(self, url: str) -> Tuple[str, str, str]:
         """Fetch URL content and return (filename, base64, mime)."""
         try:
-            app_url = get_config("app.app_url") or ""
-            if app_url and self._is_url(url):
-                parsed = urlparse(url)
-                app_parsed = urlparse(app_url)
-                if (
-                    parsed.scheme == app_parsed.scheme
-                    and parsed.netloc == app_parsed.netloc
-                    and parsed.path.startswith("/v1/files/")
-                ):
-                    parts = parsed.path.strip("/").split("/", 3)
-                    if len(parts) >= 4:
-                        local_type = parts[2]
-                        name = parts[3].replace("/", "-")
-                        return await self._read_local_file(local_type, name)
+            if self._is_url(url):
+                internal_ref = self._resolve_internal_file_ref(url)
+                if internal_ref:
+                    local_type, name = internal_ref
+                    logger.debug(
+                        "Upload parse_b64 resolved internal file URL locally: type={}, name={}",
+                        local_type,
+                        name,
+                    )
+                    return await self._read_local_file(local_type, name)
 
             lock_name = f"ul_url_{hashlib.sha1(url.encode()).hexdigest()[:16]}"
             timeout = float(get_config("asset.upload_timeout"))
@@ -388,7 +426,8 @@ class UploadService:
                 hint = (e.details or {}).get("hint", "")
                 normalized_hint = self._extract_upstream_rejection_hint(e) or hint
                 logger.warning(
-                    "Upload image upstream rejected: filename={}, status={}, hint={}, body={}",
+                    "Upload image upstream rejected: "
+                    "filename={}, status={}, hint={}, body={}",
                     filename,
                     status,
                     normalized_hint or "-",
@@ -423,7 +462,8 @@ class UploadService:
                     try:
                         b64_retry = self._reencode_jpeg_with_profile(b64, **profile)
                         logger.warning(
-                            "Upload image fallback re-encode retry: attempt={}, status={}, profile={}, out_len={}",
+                            "Upload image fallback re-encode retry: "
+                            "attempt={}, status={}, profile={}, out_len={}",
                             idx,
                             status,
                             profile,

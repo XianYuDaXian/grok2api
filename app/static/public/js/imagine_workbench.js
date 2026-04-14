@@ -54,6 +54,15 @@
     }
   }
 
+  function normalizeUploadErrorMessage(message) {
+    const text = String(message || '').trim();
+    if (!text) return text;
+    if (/content_moderated|content[- ]moderated|content is moderated/i.test(text)) {
+      return '图片内容触发审核限制，无法上传。请更换图片后重试。';
+    }
+    return text;
+  }
+
   function getParentMemoryApi() {
     return window.ParentPostMemory || null;
   }
@@ -1293,12 +1302,15 @@
     try {
       const data = JSON.parse(text);
       if (data && typeof data === 'object' && data.detail) {
-        return String(data.detail);
+        return normalizeUploadErrorMessage(String(data.detail));
+      }
+      if (data && typeof data === 'object' && data.error && data.error.message) {
+        return normalizeUploadErrorMessage(String(data.error.message));
       }
     } catch (e) {
       // ignore
     }
-    return text;
+    return normalizeUploadErrorMessage(text);
   }
 
   async function requestWorkbenchEditStream(authHeader, body, onProgress, signal) {

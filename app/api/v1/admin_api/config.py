@@ -1,10 +1,12 @@
 import os
+import shutil
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.core.auth import verify_app_key
 from app.core.config import config
-from app.core.logger import logger
+from app.core.logger import logger, LOG_DIR
 from app.services.grok.services.model import ModelService
 from app.services.token import get_token_manager
 from app.core.storage import (
@@ -16,6 +18,44 @@ from app.core.storage import (
 from app.services.cf_refresh.scheduler import refresh_once
 
 router = APIRouter()
+
+
+def _clear_log_dir() -> dict:
+    """清空日志目录内容，保留目录本身。"""
+    log_dir = Path(LOG_DIR)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    deleted_files = 0
+    deleted_dirs = 0
+    released_bytes = 0
+
+    for child in log_dir.iterdir():
+        try:
+            if child.is_file() or child.is_symlink():
+                try:
+                    released_bytes += child.stat().st_size
+                except OSError:
+                    pass
+                child.unlink(missing_ok=True)
+                deleted_files += 1
+                continue
+            if child.is_dir():
+                for nested in child.rglob("*"):
+                    if nested.is_file():
+                        try:
+                            released_bytes += nested.stat().st_size
+                        except OSError:
+                            pass
+                shutil.rmtree(child, ignore_errors=False)
+                deleted_dirs += 1
+        except FileNotFoundError:
+            continue
+
+    return {
+        "log_dir": str(log_dir),
+        "deleted_files": deleted_files,
+        "deleted_dirs": deleted_dirs,
+        "released_bytes": released_bytes,
+    }
 
 
 @router.get("/verify", dependencies=[Depends(verify_app_key)])
@@ -62,6 +102,19 @@ async def refresh_cf_clearance():
         raise
     except Exception as e:
         logger.error(f"Manual cf_clearance refresh failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+@router.post("/config/clear-logs", dependencies=[Depends(verify_app_key)])
+async def clear_logs():
+    """清空日志目录。"""
+    try:
+        result = _clear_log_dir()
+        return {
+            "status": "success",
+            "message": "日志文件夹已清空",
+            "data": result,
+        }
+    except Exception as e:
+        logger.error(f"Clear log directory failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

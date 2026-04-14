@@ -253,6 +253,7 @@ class ImageGenerationService:
         aspect_ratio: str,
         stream: bool,
         enable_nsfw: Optional[bool] = None,
+        enable_pro: Optional[bool] = None,
     ) -> ImageGenerationResult:
         max_token_retries = int(get_config("retry.max_retry"))
         tried_tokens: set[str] = set()
@@ -292,6 +293,7 @@ class ImageGenerationService:
                                 size=size,
                                 aspect_ratio=aspect_ratio,
                                 enable_nsfw=enable_nsfw,
+                                enable_pro=enable_pro,
                             )
                         else:
                             result = await self._stream_app_chat(
@@ -325,6 +327,7 @@ class ImageGenerationService:
                             size=size,
                             aspect_ratio=aspect_ratio,
                             enable_nsfw=enable_nsfw,
+                            enable_pro=enable_pro,
                         )
                     try:
                         async for chunk in result.data:
@@ -399,6 +402,7 @@ class ImageGenerationService:
                             response_format=response_format,
                             aspect_ratio=aspect_ratio,
                             enable_nsfw=enable_nsfw,
+                            enable_pro=enable_pro,
                         )
                     else:
                         result = await self._collect_app_chat(
@@ -431,6 +435,7 @@ class ImageGenerationService:
                         response_format=response_format,
                         aspect_ratio=aspect_ratio,
                         enable_nsfw=enable_nsfw,
+                        enable_pro=enable_pro,
                     )
                 if probationary_invalid_tokens:
                     for failed_token, failed_error in probationary_invalid_tokens.items():
@@ -480,15 +485,18 @@ class ImageGenerationService:
         size: str,
         aspect_ratio: str,
         enable_nsfw: Optional[bool] = None,
+        enable_pro: Optional[bool] = None,
     ) -> ImageGenerationResult:
         if enable_nsfw is None:
             enable_nsfw = bool(get_config("image.nsfw"))
+        enable_pro = bool(enable_pro)
         upstream = image_service.stream(
             token=token,
             prompt=prompt,
             aspect_ratio=aspect_ratio,
             n=n,
             enable_nsfw=enable_nsfw,
+            enable_pro=enable_pro,
         )
         processor = ImageWSStreamProcessor(
             model_info.model_id,
@@ -516,9 +524,11 @@ class ImageGenerationService:
         response_format: str,
         aspect_ratio: str,
         enable_nsfw: Optional[bool] = None,
+        enable_pro: Optional[bool] = None,
     ) -> ImageGenerationResult:
         if enable_nsfw is None:
             enable_nsfw = bool(get_config("image.nsfw"))
+        enable_pro = bool(enable_pro)
         all_images: List[str] = []
         seen = set()
         expected_per_call = 6
@@ -531,6 +541,7 @@ class ImageGenerationService:
                 aspect_ratio=aspect_ratio,
                 n=call_target,
                 enable_nsfw=enable_nsfw,
+                enable_pro=enable_pro,
             )
             processor = ImageWSCollectProcessor(
                 model_info.model_id,
@@ -555,16 +566,11 @@ class ImageGenerationService:
 
             results = await asyncio.gather(*tasks, return_exceptions=True)
             added_in_round = 0
-            filtered_png = 0
-
             for batch in results:
                 if isinstance(batch, Exception):
                     logger.warning(f"WS batch failed: {batch}")
                     continue
                 for img in batch:
-                    if self._is_blocked_png_image(img):
-                        filtered_png += 1
-                        continue
                     if img not in seen:
                         seen.add(img)
                         all_images.append(img)
@@ -578,17 +584,17 @@ class ImageGenerationService:
                 "WS collect round: "
                 f"{round_idx}/{max_collect_rounds}, "
                 f"target={n}, collected={len(all_images)}, "
-                f"added={added_in_round}, filtered_png={filtered_png}"
+                f"added={added_in_round}"
             )
 
             if len(all_images) >= n:
                 break
-            if added_in_round == 0 and filtered_png > 0 and round_idx >= 3:
-                logger.warning(
-                    "WS collect appears blocked by png-only results, stop early: "
-                    f"target={n}, collected={len(all_images)}"
-                )
-                break
+
+        if not all_images:
+            raise UpstreamException(
+                "No final image received from upstream",
+                details={"error_code": "blocked_no_final_image"},
+            )
 
         try:
             await token_mgr.consume(token, self._get_effort(model_info))
@@ -605,19 +611,6 @@ class ImageGenerationService:
         return ImageGenerationResult(
             stream=False, data=selected, usage_override=usage_override
         )
-
-    @staticmethod
-    def _is_blocked_png_image(image: str) -> bool:
-        value = str(image or "").strip().lower()
-        if not value:
-            return True
-        if value.startswith("data:image/png;base64,"):
-            return True
-        if value.startswith("ivborw0kggo"):
-            return True
-        if ".png" in value:
-            return True
-        return False
 
     @staticmethod
     def _get_effort(model_info: Any) -> EffortType:
@@ -938,6 +931,7 @@ class ImageWSCollectProcessor(ImageWSBaseProcessor):
 
     async def process(self, response: AsyncIterable[dict]) -> List[str]:
         images: Dict[str, Dict] = {}
+        saw_any_image = False
 
         async for item in response:
             if item.get("type") == "error":
@@ -945,10 +939,19 @@ class ImageWSCollectProcessor(ImageWSBaseProcessor):
                 raise UpstreamException(message, details=item)
             if item.get("type") != "image":
                 continue
+            saw_any_image = True
             image_id = item.get("image_id")
             if not image_id:
                 continue
+            if not item.get("is_final"):
+                continue
             images[image_id] = self._pick_best(images.get(image_id), item)
+
+        if saw_any_image and not images:
+            raise UpstreamException(
+                "No final image received from upstream",
+                details={"error_code": "blocked_no_final_image"},
+            )
 
         selected = sorted(
             images.values(),

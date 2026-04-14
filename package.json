@@ -1,0 +1,14 @@
+{
+  "name": "grok2api-frontend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:chat": "esbuild app/static/public/js/chat.js --bundle --platform=browser --format=iife --target=es2022 --outfile=app/static/public/js/chat.bundle.js",
+    "test:chat": "vitest run app/static/public/src/chat/__tests__"
+  },
+  "devDependencies": {
+    "@chenglou/pretext": "^0.0.3",
+    "esbuild": "^0.25.9",
+    "vitest": "^3.2.4"
+  }
+}

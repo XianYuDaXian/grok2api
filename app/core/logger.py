@@ -16,7 +16,17 @@ if not hasattr(logger, "isEnabledFor"):
 # 日志目录
 DEFAULT_LOG_DIR = Path(__file__).parent.parent.parent / "logs"
 LOG_DIR = Path(os.getenv("LOG_DIR", str(DEFAULT_LOG_DIR)))
+LEGACY_TRAFFIC_LOG = DEFAULT_LOG_DIR.parent / "app_traffic.log"
 _LOG_DIR_READY = False
+
+
+def _cleanup_legacy_logs() -> None:
+    """清理历史遗留的根目录日志文件。"""
+    try:
+        if LEGACY_TRAFFIC_LOG.exists() and LEGACY_TRAFFIC_LOG.is_file():
+            LEGACY_TRAFFIC_LOG.unlink()
+    except Exception:
+        pass
 
 
 def _prepare_log_dir() -> bool:
@@ -26,6 +36,7 @@ def _prepare_log_dir() -> bool:
         return True
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
+        _cleanup_legacy_logs()
         _LOG_DIR_READY = True
         return True
     except Exception:
@@ -108,10 +119,13 @@ def _file_json_sink(message):
 def setup_logging(
     level: str = "DEBUG",
     json_console: bool = True,
-    file_logging: bool = True,
+    file_logging: bool | None = None,
 ):
     """设置日志配置"""
     logger.remove()
+    if file_logging is None:
+        from app.core.config import get_config
+        file_logging = bool(get_config("app.app_log_enabled", True))
     file_logging = _env_flag("LOG_FILE_ENABLED", file_logging)
     enqueue_logs = _should_enqueue_logs()
 

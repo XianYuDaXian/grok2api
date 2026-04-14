@@ -222,6 +222,7 @@ Render 免费实例注意：
 - WS 瀑布流图片可点击进入预览编辑模式，方便快速迭代图片元素
 - 可复制 `parentPostId`
 - 可把 `parentPostId` 写入全局记忆，供后续视频生成和图片编辑复用
+- 生图模式支持 `快速 / 质量` 切换，对应上游 `enable_pro`
 
 ### 2. 图片编辑工作台
 
@@ -265,6 +266,7 @@ Render 免费实例注意：
 - 候选图支持继续编辑，复用与图片工作台一致的编辑交互和历史能力
 - 并行视频数支持 `1~4`
 - 任务可随时中断
+- 候选图支持 `快速 / 质量` 切换
 
 ### 5. 跨页面共用能力
 
@@ -356,6 +358,15 @@ main.py               应用入口
 - NSFW 相关辅助操作
 
 ## API 用法
+
+### 图片质量模式字段
+
+所有图片生成相关接口统一使用：
+
+- `pro: false` = 快速模式
+- `pro: true` = 质量模式
+
+程序内部会把它转换成上游 websocket 请求里的 `properties.enable_pro`。
 
 ### 对话接口
 
@@ -494,6 +505,56 @@ curl http://127.0.0.1:8000/v1/images/edits \
   -F "prompt=@Image 1 在左边，@Image 2 在右边，两人合照" \
   -F "image=@/path/to/image1.png" \
   -F "image=@/path/to/image2.png"
+```
+
+### 图片生成
+
+`POST /v1/images/generations`
+
+```bash
+curl http://127.0.0.1:8000/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -d '{
+    "model": "grok-imagine-1.0",
+    "prompt": "未来城市霓虹雨夜，广角摄影",
+    "size": "1024x1792",
+    "n": 1,
+    "pro": true
+  }'
+```
+
+### Public Imagine 瀑布流启动
+
+`POST /v1/public/imagine/start`
+
+```bash
+curl http://127.0.0.1:8000/v1/public/imagine/start \
+  -H "Content-Type: application/json" \
+  -H "x-public-key: YOUR_PUBLIC_KEY" \
+  -d '{
+    "prompt": "未来城市霓虹雨夜，广角摄影",
+    "aspect_ratio": "2:3",
+    "nsfw": false,
+    "pro": true
+  }'
+```
+
+### NSFW 全流程
+
+`POST /v1/nsfw`
+
+```bash
+curl http://127.0.0.1:8000/v1/nsfw \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -d '{
+    "image_prompt": "cozy bedroom portrait",
+    "aspect_ratio": "2:3",
+    "image_parallel": 4,
+    "video_parallel": 4,
+    "pro": true
+  }'
 ```
 
 ## 兼容性说明

@@ -10,13 +10,14 @@
   const reverseInsertToggle = document.getElementById('reverseInsertToggle');
   const autoFilterToggle = document.getElementById('autoFilterToggle');
   const nsfwSelect = document.getElementById('nsfwSelect');
+  const qualityButtons = document.querySelectorAll('.quality-btn');
   const selectFolderBtn = document.getElementById('selectFolderBtn');
   const folderPath = document.getElementById('folderPath');
   const statusText = document.getElementById('statusText');
   const countValue = document.getElementById('countValue');
   const activeValue = document.getElementById('activeValue');
   const latencyValue = document.getElementById('latencyValue');
-  const modeButtons = document.querySelectorAll('.mode-btn');
+  const modeButtons = document.querySelectorAll('.mode-btn[data-mode]');
   const waterfall = document.getElementById('waterfall');
   const emptyState = document.getElementById('emptyState');
   const lightbox = document.getElementById('lightbox');
@@ -39,9 +40,12 @@
   let latencyCount = 0;
   let lastRunId = '';
   let isRunning = false;
+  let stopRequested = false;
   let connectionMode = 'ws';
   let modePreference = 'auto';
   const MODE_STORAGE_KEY = 'imagine_mode';
+  const QUALITY_STORAGE_KEY = 'imagine_quality_mode';
+  let imagineProMode = false;
   let pendingFallbackTimer = null;
   let currentTaskIds = [];
   let directoryHandle = null;
@@ -68,6 +72,37 @@
     if (typeof showToast === 'function') {
       showToast(message, type);
     }
+  }
+
+  function normalizeUploadErrorMessage(message) {
+    const text = String(message || '').trim();
+    if (!text) return text;
+    if (/content_moderated|content[- ]moderated|content is moderated/i.test(text)) {
+      return '图片内容触发审核限制，无法上传。请更换图片后重试。';
+    }
+    return text;
+  }
+
+  async function parseApiErrorText(res, fallbackText) {
+    const text = await res.text();
+    if (!text) return fallbackText || `请求失败：HTTP ${res.status}`;
+    try {
+      const data = JSON.parse(text);
+      if (data && typeof data === 'object') {
+        if (data.error && data.error.message) {
+          return normalizeUploadErrorMessage(String(data.error.message));
+        }
+        if (data.detail) {
+          return normalizeUploadErrorMessage(String(data.detail));
+        }
+        if (data.message) {
+          return normalizeUploadErrorMessage(String(data.message));
+        }
+      }
+    } catch (e) {
+      // ignore
+    }
+    return normalizeUploadErrorMessage(text || fallbackText);
   }
 
   function setStatus(state, text) {
@@ -129,6 +164,21 @@
   }
 
   function updateModeValue() { }
+
+  function setQualityMode(enabled, persist = true) {
+    imagineProMode = Boolean(enabled);
+    qualityButtons.forEach(btn => {
+      const isActive = String(btn.dataset.pro) === String(imagineProMode);
+      btn.classList.toggle('active', isActive);
+    });
+    if (persist) {
+      try {
+        localStorage.setItem(QUALITY_STORAGE_KEY, imagineProMode ? 'quality' : 'quick');
+      } catch (e) {
+        // ignore
+      }
+    }
+  }
 
   async function loadFilterDefaults() {
     try {
@@ -523,27 +573,26 @@
     }
   }
 
-  async function createImagineTask(prompt, ratio, authHeader, nsfwEnabled) {
+  async function createImagineTask(prompt, ratio, authHeader, nsfwEnabled, proEnabled) {
     const res = await fetch('/v1/public/imagine/start', {
       method: 'POST',
       headers: {
         ...buildAuthHeaders(authHeader),
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ prompt, aspect_ratio: ratio, nsfw: nsfwEnabled })
+      body: JSON.stringify({ prompt, aspect_ratio: ratio, nsfw: nsfwEnabled, pro: proEnabled })
     });
     if (!res.ok) {
-      const text = await res.text();
-      throw new Error(text || 'Failed to create task');
+      throw new Error(await parseApiErrorText(res, 'Failed to create task'));
     }
     const data = await res.json();
     return data && data.task_id ? String(data.task_id) : '';
   }
 
-  async function createImagineTasks(prompt, ratio, concurrent, authHeader, nsfwEnabled) {
+  async function createImagineTasks(prompt, ratio, concurrent, authHeader, nsfwEnabled, proEnabled) {
     const tasks = [];
     for (let i = 0; i < concurrent; i++) {
-      const taskId = await createImagineTask(prompt, ratio, authHeader, nsfwEnabled);
+      const taskId = await createImagineTask(prompt, ratio, authHeader, nsfwEnabled, proEnabled);
       if (!taskId) {
         throw new Error('Missing task id');
       }
@@ -566,8 +615,7 @@
       }),
     });
     if (!res.ok) {
-      const text = await res.text();
-      throw new Error(text || 'edit_failed');
+      throw new Error(await parseApiErrorText(res, 'edit_failed'));
     }
     return await res.json();
   }
@@ -589,8 +637,7 @@
     });
 
     if (!res.ok) {
-      const text = await res.text();
-      throw new Error(text || 'edit_failed');
+      throw new Error(await parseApiErrorText(res, 'edit_failed'));
     }
 
     const contentType = String(res.headers.get('content-type') || '').toLowerCase();
@@ -1009,6 +1056,7 @@
     item.appendChild(checkbox);
     item.appendChild(img);
     item.appendChild(metaBar);
+    applyImagineModerationBadge(item, meta);
 
     const prompt = (meta && meta.prompt) ? String(meta.prompt) : (promptInput ? promptInput.value.trim() : '');
     item.dataset.imageUrl = dataUrl;
@@ -1065,6 +1113,40 @@
         downloadImage(base64, filename);
       }
     }
+  }
+
+  function isModeratedImagineItem(meta) {
+    if (!meta || typeof meta !== 'object') return false;
+    if (meta.moderated === true) return true;
+    const status = String(meta.current_status || meta.status || '').trim().toLowerCase();
+    return ['blocked', 'rejected', 'moderated', 'filtered'].includes(status);
+  }
+
+  function moderatedImagineLabel(meta) {
+    if (!meta || typeof meta !== 'object') return '审核拒绝';
+    const status = String(meta.current_status || meta.status || '').trim().toLowerCase();
+    if (status === 'blocked') return '已拦截';
+    if (status === 'filtered') return '已过滤';
+    return '审核拒绝';
+  }
+
+  function applyImagineModerationBadge(item, meta) {
+    if (!item) return;
+    const moderated = isModeratedImagineItem(meta);
+    item.classList.toggle('is-moderated', moderated);
+    let badge = item.querySelector('.image-moderation-badge');
+    if (!moderated) {
+      if (badge) {
+        badge.remove();
+      }
+      return;
+    }
+    if (!badge) {
+      badge = document.createElement('div');
+      badge.className = 'image-moderation-badge';
+      item.appendChild(badge);
+    }
+    badge.textContent = moderatedImagineLabel(meta);
   }
 
   function upsertStreamImage(raw, meta, imageId, isFinal) {
@@ -1135,6 +1217,7 @@
       item.appendChild(checkbox);
       item.appendChild(img);
       item.appendChild(metaBar);
+      applyImagineModerationBadge(item, meta);
 
       const prompt = (meta && meta.prompt) ? String(meta.prompt) : (promptInput ? promptInput.value.trim() : '');
       item.dataset.imageUrl = dataUrl;
@@ -1194,6 +1277,7 @@
       if (right && meta && meta.elapsed_ms) {
         right.textContent = `${meta.elapsed_ms}ms`;
       }
+      applyImagineModerationBadge(item, meta);
     }
 
     updateError('');
@@ -1221,7 +1305,24 @@
     }
   }
 
-  function handleMessage(raw) {
+  function finalizeStoppedRun(statusLabel = '已停止') {
+    currentTaskIds = [];
+    isRunning = false;
+    stopRequested = false;
+    wsPausedByEdit = false;
+    updateActive();
+    updateModeValue();
+    setButtons(false);
+    setStatus('', statusLabel);
+    if (startBtn) {
+      startBtn.disabled = false;
+    }
+    if (stopBtn) {
+      stopBtn.disabled = false;
+    }
+  }
+
+  function handleMessage(raw, source) {
     let data = null;
     try {
       data = JSON.parse(raw);
@@ -1246,10 +1347,31 @@
       appendImage(data.b64_json, data);
     } else if (data.type === 'status') {
       if (data.status === 'running') {
+        stopRequested = false;
+        if (stopBtn) {
+          stopBtn.disabled = false;
+        }
         setStatus('connected', '生成中');
         lastRunId = data.run_id || '';
       } else if (data.status === 'stopped') {
-        if (data.run_id && lastRunId && data.run_id !== lastRunId) {
+        if (!stopRequested && data.run_id && lastRunId && data.run_id !== lastRunId) {
+          return;
+        }
+        if (stopRequested && source && typeof source.close === 'function') {
+          try {
+            source.close(1000, 'graceful stop');
+          } catch (e) {
+            try {
+              source.close();
+            } catch (closeError) {
+              // ignore
+            }
+          }
+          const remainingWs = wsConnections.filter(w => w && w.readyState === WebSocket.OPEN).length;
+          const remainingSse = sseConnections.filter(es => es && es.readyState === EventSource.OPEN).length;
+          if (remainingWs === 0 && remainingSse === 0) {
+            finalizeStoppedRun('已停止');
+          }
           return;
         }
         setStatus('', '已停止');
@@ -1261,9 +1383,10 @@
     }
   }
 
-  function stopAllConnections() {
+  function stopAllConnections(options = {}) {
+    const { sendStop = true } = options;
     wsConnections.forEach(ws => {
-      if (ws && ws.readyState === WebSocket.OPEN) {
+      if (sendStop && ws && ws.readyState === WebSocket.OPEN) {
         try {
           ws.send(JSON.stringify({ type: 'stop' }));
         } catch (e) {
@@ -1358,12 +1481,16 @@
       };
 
       es.onmessage = (event) => {
-        handleMessage(event.data);
+        handleMessage(event.data, es);
       };
 
       es.onerror = () => {
         updateActive();
         const remaining = sseConnections.filter(e => e && e.readyState === EventSource.OPEN).length;
+        if (stopRequested && remaining === 0) {
+          finalizeStoppedRun('已停止');
+          return;
+        }
         if (remaining === 0) {
           setStatus('error', '连接错误');
           setButtons(false);
@@ -1395,6 +1522,7 @@
     const concurrent = concurrentSelect ? parseInt(concurrentSelect.value, 10) : 1;
     const ratio = ratioSelect ? ratioSelect.value : '2:3';
     const nsfwEnabled = nsfwSelect ? nsfwSelect.value === 'true' : true;
+    const proEnabled = imagineProMode;
 
     if (isRunning) {
       toast('已在运行中', 'warning');
@@ -1402,8 +1530,12 @@
     }
 
     isRunning = true;
+    stopRequested = false;
     setStatus('connecting', '连接中');
     startBtn.disabled = true;
+    if (stopBtn) {
+      stopBtn.disabled = false;
+    }
 
     if (pendingFallbackTimer) {
       clearTimeout(pendingFallbackTimer);
@@ -1412,7 +1544,7 @@
 
     let taskIds = [];
     try {
-      taskIds = await createImagineTasks(prompt, ratio, concurrent, authHeader, nsfwEnabled);
+      taskIds = await createImagineTasks(prompt, ratio, concurrent, authHeader, nsfwEnabled, proEnabled);
     } catch (e) {
       setStatus('error', '创建任务失败');
       startBtn.disabled = false;
@@ -1466,7 +1598,7 @@
       };
 
       ws.onmessage = (event) => {
-        handleMessage(event.data);
+        handleMessage(event.data, ws);
       };
 
       ws.onclose = () => {
@@ -1475,6 +1607,10 @@
           return;
         }
         const remaining = wsConnections.filter(w => w && w.readyState === WebSocket.OPEN).length;
+        if (stopRequested && remaining === 0) {
+          finalizeStoppedRun('已停止');
+          return;
+        }
         if (remaining === 0 && !fallbackDone) {
           setStatus('', '未连接');
           setButtons(false);
@@ -1511,35 +1647,53 @@
     const prompt = promptOverride || (promptInput ? promptInput.value.trim() : '');
     const ratio = ratioSelect ? ratioSelect.value : '2:3';
     const nsfwEnabled = nsfwSelect ? nsfwSelect.value === 'true' : true;
+    const proEnabled = imagineProMode;
     const payload = {
       type: 'start',
       prompt,
       aspect_ratio: ratio,
-      nsfw: nsfwEnabled
+      nsfw: nsfwEnabled,
+      pro: proEnabled
     };
     ws.send(JSON.stringify(payload));
     updateError('');
   }
 
   async function stopConnection() {
+    if (!isRunning || stopRequested) {
+      return;
+    }
     if (pendingFallbackTimer) {
       clearTimeout(pendingFallbackTimer);
       pendingFallbackTimer = null;
     }
 
+    stopRequested = true;
+    if (stopBtn) {
+      stopBtn.disabled = true;
+    }
+    setStatus('connecting', '停止中，等待当前批次完成');
+
     const authHeader = await ensurePublicKey();
     if (authHeader !== null && currentTaskIds.length > 0) {
       await stopImagineTasks(currentTaskIds, authHeader);
     }
-
-    stopAllConnections();
-    currentTaskIds = [];
-    isRunning = false;
-    wsPausedByEdit = false;
-    updateActive();
-    updateModeValue();
-    setButtons(false);
-    setStatus('', '未连接');
+    if (connectionMode === 'ws') {
+      wsConnections.forEach(ws => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          try {
+            ws.send(JSON.stringify({ type: 'stop' }));
+          } catch (e) {
+            // ignore
+          }
+        }
+      });
+    }
+    const remainingWs = wsConnections.filter(w => w && w.readyState === WebSocket.OPEN).length;
+    const remainingSse = sseConnections.filter(es => es && es.readyState === EventSource.OPEN).length;
+    if (remainingWs === 0 && remainingSse === 0) {
+      finalizeStoppedRun('已停止');
+    }
   }
 
   function clearImages() {
@@ -1626,6 +1780,22 @@
             setTimeout(() => startConnection(), 50);
           });
         }
+      });
+    });
+  }
+
+  if (qualityButtons.length > 0) {
+    const savedQuality = (() => {
+      try {
+        return localStorage.getItem(QUALITY_STORAGE_KEY);
+      } catch (e) {
+        return null;
+      }
+    })();
+    setQualityMode(savedQuality === 'quality', false);
+    qualityButtons.forEach(btn => {
+      btn.addEventListener('click', () => {
+        setQualityMode(btn.dataset.pro === 'true');
       });
     });
   }

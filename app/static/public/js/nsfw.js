@@ -6,6 +6,7 @@
   const resolutionSelect = document.getElementById('resolutionSelect');
   const videoLengthSelect = document.getElementById('videoLengthSelect');
   const nsfwSelect = document.getElementById('nsfwSelect');
+  const qualityButtons = document.querySelectorAll('.nsfw-quality-btn');
 
   const generateBatchBtn = document.getElementById('generateBatchBtn');
   const stopBatchBtn = document.getElementById('stopBatchBtn');
@@ -66,6 +67,7 @@
     editProgressStartedAt: 0,
     editDurationEstimateMs: 14000,
     imageFullscreen: false,
+    imageProMode: false,
   };
   let lightboxEditAbortController = null;
   if (lightboxEditSend) {
@@ -76,6 +78,45 @@
     if (typeof showToast === 'function') {
       showToast(message, type);
     }
+  }
+
+  function setImageQualityMode(enabled) {
+    state.imageProMode = Boolean(enabled);
+    qualityButtons.forEach(btn => {
+      const isActive = String(btn.dataset.pro) === String(state.imageProMode);
+      btn.classList.toggle('active', isActive);
+    });
+  }
+
+  function normalizeUploadErrorMessage(message) {
+    const text = String(message || '').trim();
+    if (!text) return text;
+    if (/content_moderated|content[- ]moderated|content is moderated/i.test(text)) {
+      return '图片内容触发审核限制，无法上传。请更换图片后重试。';
+    }
+    return text;
+  }
+
+  async function parseApiErrorText(res, fallbackText) {
+    const text = await res.text();
+    if (!text) return fallbackText || `请求失败：HTTP ${res.status}`;
+    try {
+      const data = JSON.parse(text);
+      if (data && typeof data === 'object') {
+        if (data.error && data.error.message) {
+          return normalizeUploadErrorMessage(String(data.error.message));
+        }
+        if (data.detail) {
+          return normalizeUploadErrorMessage(String(data.detail));
+        }
+        if (data.message) {
+          return normalizeUploadErrorMessage(String(data.message));
+        }
+      }
+    } catch (e) {
+      // ignore
+    }
+    return normalizeUploadErrorMessage(text || fallbackText);
   }
 
   function ensureVideoRenameDialog() {
@@ -512,7 +553,7 @@
     );
   }
 
-  async function createImagineTask(authHeader, prompt, ratio, nsfwEnabled) {
+  async function createImagineTask(authHeader, prompt, ratio, nsfwEnabled, proEnabled) {
     const res = await fetch('/v1/public/imagine/start', {
       method: 'POST',
       headers: {
@@ -523,10 +564,11 @@
         prompt,
         aspect_ratio: ratio,
         nsfw: nsfwEnabled,
+        pro: proEnabled,
       }),
     });
     if (!res.ok) {
-      throw new Error(await res.text() || 'imagine_start_failed');
+      throw new Error(await parseApiErrorText(res, 'imagine_start_failed'));
     }
     return await res.json();
   }
@@ -564,8 +606,7 @@
     });
 
     if (!res.ok) {
-      const text = await res.text();
-      throw new Error(text || 'edit_failed');
+      throw new Error(await parseApiErrorText(res, 'edit_failed'));
     }
 
     const contentType = String(res.headers.get('content-type') || '').toLowerCase();
@@ -1342,12 +1383,13 @@
 
     const ratio = ratioSelect ? ratioSelect.value : '16:9';
     const nsfwEnabled = nsfwSelect ? nsfwSelect.value === 'true' : true;
+    const proEnabled = state.imageProMode;
     const startCount = state.candidates.length;
     state.imageTargetTotal = startCount + 6;
 
     let data = null;
     try {
-      data = await createImagineTask(authHeader, prompt, ratio, nsfwEnabled);
+      data = await createImagineTask(authHeader, prompt, ratio, nsfwEnabled, proEnabled);
     } catch (e) {
       setChip(imageStatusText, '候选图：创建失败', 'error');
       toast('候选图任务创建失败', 'error');
@@ -1431,7 +1473,7 @@
       body: JSON.stringify(payload),
     });
     if (!res.ok) {
-      throw new Error(await res.text() || 'video_start_failed');
+      throw new Error(await parseApiErrorText(res, 'video_start_failed'));
     }
     return await res.json();
   }
@@ -1938,6 +1980,15 @@
         return;
       }
       startImageBatch();
+    });
+  }
+
+  if (qualityButtons.length > 0) {
+    setImageQualityMode(false);
+    qualityButtons.forEach(btn => {
+      btn.addEventListener('click', () => {
+        setImageQualityMode(btn.dataset.pro === 'true');
+      });
     });
   }
   if (nextBatchBtn) {

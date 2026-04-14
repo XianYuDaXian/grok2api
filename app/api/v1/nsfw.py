@@ -72,6 +72,7 @@ class NSFWRequest(BaseModel):
     video_length: int = Field(6, ge=5, le=15, description="视频秒数")
     resolution: str = Field("480p", description="视频分辨率: 480p/720p")
     preset: str = Field("spicy", description="视频风格: fun/normal/spicy")
+    pro: bool = Field(False, description="质量模式")
     upscale: bool = Field(True, description="视频完成后是否尝试超分")
     image_only: bool = Field(False, description="仅生图不生视频")
     parent_post_only: bool = Field(
@@ -303,6 +304,7 @@ async def _generate_nsfw_inner(data: NSFWRequest) -> Dict[str, Any]:
             aspect_ratio=ratio,
             stream=False,
             enable_nsfw=True,
+            enable_pro=data.pro,
         )
         images_batch: List[str] = []
         if isinstance(result.data, list) and result.data:

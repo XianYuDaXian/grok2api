@@ -64,6 +64,8 @@ def _migrate_deprecated_config(
         "grok.thinking": "app.thinking",
         "grok.dynamic_statsig": "app.dynamic_statsig",
         "grok.filter_tags": "app.filter_tags",
+        "chat.capture_enabled": "app.chat_capture_enabled",
+        "chat.capture_file": "app.chat_capture_file",
         "grok.timeout": "voice.timeout",
         "grok.base_proxy_url": "proxy.base_proxy_url",
         "grok.asset_proxy_url": "proxy.asset_proxy_url",
@@ -168,13 +170,16 @@ def _migrate_deprecated_config(
         "thinking": "thinking",
         "dynamic_statsig": "dynamic_statsig",
         "filter_tags": "filter_tags",
+        "capture_enabled": "chat_capture_enabled",
+        "capture_file": "chat_capture_file",
     }
     chat_section = config.get("chat")
     if isinstance(chat_section, dict):
         app_section = result.setdefault("app", {})
         for old_key, new_key in legacy_chat_map.items():
-            if old_key in chat_section and new_key not in app_section:
-                app_section[new_key] = chat_section[old_key]
+            if old_key in chat_section:
+                if new_key not in app_section:
+                    app_section[new_key] = chat_section[old_key]
                 if isinstance(result.get("chat"), dict):
                     result["chat"].pop(old_key, None)
                 migrated_count += 1
@@ -306,10 +311,38 @@ class Config:
         storage = get_storage()
         async with storage.acquire_lock("config_save", timeout=10):
             self._ensure_defaults()
+            previous = deepcopy(self._config or {})
             base = _prune_removed_config_keys(_deep_merge(self._defaults, self._config or {}))
             merged = _prune_removed_config_keys(_deep_merge(base, new_config or {}))
             await storage.save_config(merged)
             self._config = merged
+        self._apply_runtime_updates(previous, self._config)
+
+    def _apply_runtime_updates(self, previous: Dict[str, Any], current: Dict[str, Any]):
+        """配置变更后立即应用可热更新的运行时设置。"""
+        prev_app = previous.get("app") if isinstance(previous, dict) else {}
+        curr_app = current.get("app") if isinstance(current, dict) else {}
+        prev_app = prev_app if isinstance(prev_app, dict) else {}
+        curr_app = curr_app if isinstance(curr_app, dict) else {}
+
+        log_related_keys = {
+            "app_log_enabled",
+            "chat_capture_enabled",
+            "chat_capture_file",
+        }
+        if any(prev_app.get(key) != curr_app.get(key) for key in log_related_keys):
+            try:
+                from app.core.logger import setup_logging
+                import os
+
+                setup_logging(
+                    level=os.getenv("LOG_LEVEL", "INFO"),
+                    json_console=False,
+                    file_logging=bool(curr_app.get("app_log_enabled", True)),
+                )
+                logger.info("Applied runtime log configuration update.")
+            except Exception as e:
+                logger.warning(f"Failed to hot-apply log configuration: {e}")
 
 
 # 全局配置实例

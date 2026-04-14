@@ -71,6 +71,7 @@ class ImageGenerationRequest(BaseModel):
         description="图片尺寸: 1280x720, 720x1280, 1792x1024, 1024x1792, 1024x1024",
     )
     quality: Optional[str] = Field("standard", description="图片质量 (暂不支持)")
+    pro: Optional[bool] = Field(False, description="质量模式")
     response_format: Optional[str] = Field(None, description="响应格式")
     style: Optional[str] = Field(None, description="风格 (暂不支持)")
     stream: Optional[bool] = Field(False, description="是否流式输出")
@@ -336,6 +337,7 @@ async def create_image(request: ImageGenerationRequest, raw_request: Request):
             size=request.size,
             aspect_ratio=aspect_ratio,
             stream=bool(request.stream),
+            enable_pro=bool(request.pro),
         )
 
         if result.stream:

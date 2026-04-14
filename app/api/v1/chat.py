@@ -2,11 +2,11 @@
 Chat Completions API 路由
 """
 
-import asyncio
-from typing import Any, Dict, List, Optional, Union
 import base64
 import binascii
+import asyncio
 import time
+from typing import Any, Dict, List, Optional, Union
 
 import orjson
 from fastapi import APIRouter, Request
@@ -27,14 +27,6 @@ from app.services.grok.utils.response import (
     make_chat_response,
     wrap_image_content,
 )
-
-
-try:
-    with open("app_traffic.log", "w", encoding="utf-8") as f:
-        import datetime
-        f.write(f"=== app_traffic.log Cleared on Uvicorn Loaded [{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ===\n\n")
-except Exception:
-    pass
 
 class MessageItem(BaseModel):
     """消息项"""
@@ -1041,20 +1033,6 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
         except Exception as e:
             return _chat_error_as_success_response(request.model, _video_error_message(e))
     else:
-        try:
-            with open("app_traffic.log", "a", encoding="utf-8") as f:
-                import datetime
-                f.write(f"--- Chat Request [{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ---\n")
-                dump = {
-                    "model": request.model,
-                    "messages": [m.model_dump() for m in request.messages],
-                    "stream": request.stream,
-                    "tools": request.tools if request.tools else None,
-                }
-                f.write(orjson.dumps(dump, option=orjson.OPT_INDENT_2).decode('utf-8') + "\n\n")
-        except Exception:
-            pass
-
         result = await ChatService.completions(
             model=request.model,
             messages=[msg.model_dump() for msg in request.messages],

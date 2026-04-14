@@ -17,6 +17,7 @@ async def cache_stats(request: Request):
     try:
         cache_service = CacheService()
         image_stats = cache_service.get_stats("image")
+        upload_image_stats = cache_service.get_stats("chat_upload")
         video_stats = cache_service.get_stats("video")
 
         mgr = await get_token_manager()
@@ -158,6 +159,7 @@ async def cache_stats(request: Request):
 
         response = {
             "local_image": image_stats,
+            "local_upload_image": upload_image_stats,
             "local_video": video_stats,
             "online": online_stats,
             "online_accounts": accounts,
@@ -405,6 +407,7 @@ async def load_cache_async(data: dict):
         try:
             cache_service = CacheService()
             image_stats = cache_service.get_stats("image")
+            upload_image_stats = cache_service.get_stats("chat_upload")
             video_stats = cache_service.get_stats("video")
 
             async def _on_item(item: str, res: dict):
@@ -441,6 +444,7 @@ async def load_cache_async(data: dict):
 
             result = {
                 "local_image": image_stats,
+                "local_upload_image": upload_image_stats,
                 "local_video": video_stats,
                 "online": online_stats,
                 "online_accounts": accounts,

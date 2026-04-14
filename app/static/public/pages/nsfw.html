@@ -19,7 +19,7 @@
   <script src="/static/common/js/theme.js?v=0.1.0"></script>
   <link href="/static/common/css/common.css?v=0.3.7" rel="stylesheet">
   <link href="/static/common/css/toast.css" rel="stylesheet">
-  <link href="/static/public/css/nsfw.css?v=0.4.2" rel="stylesheet">
+  <link href="/static/public/css/nsfw.css?v=0.4.3" rel="stylesheet">
 </head>
 
 <body class="public-page min-h-screen flex flex-col" style="background-color: var(--bg);">
@@ -93,6 +93,13 @@
                 <option value="true" selected>开启</option>
                 <option value="false">关闭</option>
               </select>
+            </div>
+            <div class="field">
+              <label class="field-label">生成模式</label>
+              <div class="mode-switch" role="group" aria-label="NSFW imagine quality mode">
+                <button class="mode-btn nsfw-quality-btn active" data-pro="false" type="button">快速</button>
+                <button class="mode-btn nsfw-quality-btn" data-pro="true" type="button">质量</button>
+              </div>
             </div>
           </div>
         </div>
@@ -258,7 +265,7 @@
   <script src="/static/common/js/toast.js"></script>
   <script src="/static/common/js/prompt-enhancer.js?v=0.1.15"></script>
   <script src="/static/common/js/pwa.js?v=0.1.1"></script>
-  <script src="/static/public/js/nsfw.js?v=0.3.8"></script>
+  <script src="/static/public/js/nsfw.js?v=0.3.9"></script>
 </body>
 
 </html>
