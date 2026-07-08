@@ -254,6 +254,61 @@ function snapshotKeys(slot) {
 
 const STATSIG_DIGEST_MARKER = "obfiowerehiring";
 
+
+async function injectStatsigCaptureHookNow(page) {
+  try {
+    await page.evaluate(() => {
+      const MARKER = "obfiowerehiring";
+      if (window.__grokStatsigCaptureHooked) return;
+      window.__grokStatsigCaptureHooked = true;
+      window.__grokStatsigCapture = window.__grokStatsigCapture || [];
+      const subtle = crypto.subtle;
+      const originalDigest = subtle.digest.bind(subtle);
+      subtle.digest = function (algorithm, data) {
+        try {
+          const bytes =
+            data instanceof ArrayBuffer
+              ? new Uint8Array(data)
+              : new Uint8Array(data.buffer || data);
+          const text = new TextDecoder().decode(bytes);
+          const idx = text.indexOf(MARKER);
+          if (idx >= 0) {
+            const meta =
+              document.querySelector('meta[name="grok-site\u2015verification"]') ||
+              document.querySelector('[name^="gr"]');
+            const seed = meta
+              ? String(meta.content || meta.getAttribute("content") || "")
+              : "";
+            window.__grokStatsigCapture.push({
+              ts: Date.now(),
+              seed,
+              hex: text.slice(idx + MARKER.length),
+            });
+          }
+        } catch (_) {}
+        return originalDigest(algorithm, data);
+      };
+    });
+    return true;
+  } catch (error) {
+    log(`statsig capture hook inject-now failed: ${error.message}`);
+    return false;
+  }
+}
+async function ensureStatsigCaptureHook(page) {
+  try {
+    await installStatsigCaptureHook(page);
+    await injectStatsigCaptureHookNow(page);
+    const hooked = await page
+      .evaluate(() => Boolean(window.__grokStatsigCaptureHooked))
+      .catch(() => false);
+    if (!hooked) {
+      log("statsig capture hook not active after install");
+    }
+  } catch (error) {
+    log(`statsig capture hook ensure failed: ${error.message}`);
+  }
+}
 async function installStatsigCaptureHook(page) {
   try {
     await page.addInitScript(() => {
@@ -293,6 +348,65 @@ async function installStatsigCaptureHook(page) {
   }
 }
 
+
+async function readStatsigPairFromDom(page) {
+  try {
+    return await page.evaluate(() => {
+      const meta =
+        document.querySelector('meta[name="grok-site\u2015verification"]') ||
+        document.querySelector('[name^="gr"]');
+      const seed = meta ? String(meta.content || meta.getAttribute("content") || "").trim() : "";
+      if (!seed || seed.length < 8) {
+        return { seed: "", hex: "" };
+      }
+      const pickIndex = seed.charCodeAt(5) % 4;
+      const pathNodes = [
+        ...document.querySelectorAll('path[d]'),
+        ...document.querySelectorAll('svg path[d]'),
+      ];
+      const paths = pathNodes
+        .map((node) => String(node.getAttribute("d") || "").trim())
+        .filter((d) => d.startsWith("M"));
+      if (!paths.length) {
+        return { seed, hex: "" };
+      }
+      const d = paths[pickIndex % paths.length] || paths[0];
+      const parts = d.slice(9).split("C");
+      const nums = [];
+      for (const part of parts) {
+        const matches = part.match(/-?\d+(?:\.\d+)?(?:e[+-]?\d+)?/gi) || [];
+        for (const m of matches) {
+          const n = Number(m);
+          if (Number.isFinite(n)) nums.push(n);
+        }
+      }
+      if (!nums.length) {
+        return { seed, hex: "" };
+      }
+      const min = Math.min(...nums);
+      const max = Math.max(...nums);
+      const span = max - min || 1;
+      const norm = nums.map((n) => (n - min) / span);
+      const bytes = new Uint8Array(norm.length * 8);
+      const view = new DataView(bytes.buffer);
+      norm.forEach((val, i) => view.setFloat64(i * 8, val, true));
+      let hex = "";
+      for (let i = 0; i < bytes.length; i += 1) {
+        hex += bytes[i].toString(16).padStart(2, "0");
+      }
+      return { seed, hex };
+    });
+  } catch (_) {
+    return { seed: "", hex: "" };
+  }
+}
+
+async function resolveStatsigPair(page) {
+  const captured = await readCapturedStatsigPair(page);
+  if (isValidStatsigPair(captured)) return captured;
+  return { seed: "", hex: "" };
+}
+
 async function readCapturedStatsigPair(page) {
   try {
     return await page.evaluate(() => {
@@ -308,7 +422,7 @@ async function readCapturedStatsigPair(page) {
   }
 }
 
-function mergeStatsigPairIntoSnapshot(snapshot, pair) {
+function isValidStatsigPair(pair){if(!pair||!pair.seed||!pair.hex)return false;const seed=String(pair.seed).trim();const hex=String(pair.hex).trim();if(seed.length<40||seed.length>96)return false;if(!/^[0-9a-fA-F]+$/.test(hex))return false;if(hex.length<60||hex.length>68)return false;return true;} function mergeStatsigPairIntoSnapshot(snapshot, pair) { if(!isValidStatsigPair(pair)) return snapshot;
   if (!pair || !pair.seed || !pair.hex) return snapshot;
   return {
     ...snapshot,
@@ -330,7 +444,7 @@ async function captureProbeSnapshot(slot, request, payload) {
     captured_at: new Date().toISOString(),
   };
   let finalSnapshot = snapshot;
-  const pair = await readCapturedStatsigPair(slot.page);
+  const pair = await resolveStatsigPair(slot.page);
   finalSnapshot = mergeStatsigPairIntoSnapshot(snapshot, pair);
   for (const snapshotKey of snapshotKeys(slot)) {
     sessionSnapshots.set(snapshotKey, finalSnapshot);
@@ -459,6 +573,7 @@ async function createContextWithCookies(playwrightBrowser, sso) {
     }
     const page = await playwrightBrowser.newPage();
     setupPageDialogs(page);
+    await installStatsigCaptureHook(page);
     return { context: playwrightBrowser, page };
   }
 
@@ -473,6 +588,7 @@ async function createContextWithCookies(playwrightBrowser, sso) {
   }
   const page = await context.newPage();
   setupPageDialogs(page);
+  await installStatsigCaptureHook(page);
   return { context, page };
 }
 
@@ -787,6 +903,7 @@ async function applyProbeCookies(context, cookies) {
 
 async function prepareSlot(slot) {
   const { page } = slot;
+  await ensureStatsigCaptureHook(page);
   log("prepare-slot: navigating to Grok home");
   await page.goto(HOME_URL, {
     waitUntil: "domcontentloaded",
@@ -1285,7 +1402,7 @@ async function refreshSessionSnapshot(slot) {
     captured_at: new Date().toISOString(),
   };
   let finalSnapshot = snapshot;
-  const pair = await readCapturedStatsigPair(page);
+  const pair = await resolveStatsigPair(page);
   finalSnapshot = mergeStatsigPairIntoSnapshot(snapshot, pair);
   for (const key of snapshotKeys(slot)) {
     sessionSnapshots.set(key, finalSnapshot);
@@ -1493,7 +1610,7 @@ async function getSlot(sso) {
         captured_at: new Date().toISOString(),
       };
       let finalSnapshot = snapshot;
-      const pair = await readCapturedStatsigPair(slot.page);
+      const pair = await resolveStatsigPair(slot.page);
       finalSnapshot = mergeStatsigPairIntoSnapshot(snapshot, pair);
       for (const snapshotKey of snapshotKeys(slot)) {
         sessionSnapshots.set(snapshotKey, finalSnapshot);
@@ -1556,6 +1673,86 @@ async function submitThroughUi(slot, payload, conversationId) {
   return { status, body };
 }
 
+
+async function triggerPassiveStatsigCapture(page, slot, label = "probe") {
+  const hookPair = await resolveStatsigPair(page);
+  if (isValidStatsigPair(hookPair)) {
+    const key = slot.key || slot.sso || PROFILE_SLOT_KEY;
+    const previous = sessionSnapshots.get(key) || {};
+    const snapshot = mergeStatsigPairIntoSnapshot({ ...previous, sso: slot.sso || "" }, hookPair);
+    for (const snapshotKey of snapshotKeys(slot)) {
+      sessionSnapshots.set(snapshotKey, snapshot);
+    }
+    log(`${label}: hook pair prefetch pair=yes seed_len=${hookPair.seed.length} hex_len=${hookPair.hex.length}`);
+    return;
+  }
+
+  const key = slot.key || slot.sso || PROFILE_SLOT_KEY;
+  slot.probeActive = true;
+  try {
+    const payload = buildTemporaryProbePayload({}, slot.probePageInfo || {});
+    const responsePromise = page
+      .waitForResponse(
+        (resp) =>
+          resp.request().method() === "POST" &&
+          isConversationSubmitUrl(resp.url()) &&
+          resp.request().postDataJSON?.()?.temporary === true,
+        { timeout: 12000 }
+      )
+      .catch(() => null);
+    const result = await page.evaluate(async ({ body }) => {
+      try {
+        const resp = await fetch("https://grok.com/rest/app-chat/conversations/new", {
+          method: "POST",
+          credentials: "include",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "*/*",
+          },
+          body: JSON.stringify(body),
+        });
+        return { ok: resp.ok, status: resp.status };
+      } catch (error) {
+        return { ok: false, error: String(error && error.message ? error.message : error) };
+      }
+    }, { body: payload });
+    const response = await responsePromise;
+    if (response) {
+      try {
+        const headers = appChatRequestHeaders(await response.request().allHeaders());
+        const statsig = headers["x-statsig-id"] || "";
+        const previous = sessionSnapshots.get(key) || {};
+        let snapshot = {
+          ...previous,
+          sso: slot.sso || "",
+          request_headers: headers,
+          x_statsig_id: statsig,
+          captured_at: new Date().toISOString(),
+        };
+        const pair = await resolveStatsigPair(page);
+        snapshot = mergeStatsigPairIntoSnapshot(snapshot, pair);
+        for (const snapshotKey of snapshotKeys(slot)) {
+          sessionSnapshots.set(snapshotKey, snapshot);
+        }
+        log(
+          `${label}: passive statsig captured from waitForResponse status=${response.status()} statsig=${statsig ? "yes" : "no"} pair=${pair.seed && pair.hex ? "yes" : "no"} keys=${Object.keys(headers).join(",")}`
+        );
+      } catch (error) {
+        log(`${label}: passive statsig response capture failed: ${error.message}`);
+      }
+    } else {
+      log(
+        `${label}: passive statsig fetch new status=${result.status || result.error || "unknown"} response_wait=no`
+      );
+    }
+  } catch (error) {
+    log(`${label}: passive statsig fetch failed: ${error.message}`);
+  } finally {
+    slot.probeActive = false;
+  }
+  await waitForCapturedHeaders(key, 3000);
+}
+
 async function waitForCapturedHeaders(sso, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -1580,8 +1777,8 @@ async function waitForSlotProbeReady(slot, label) {
 }
 
 async function probeAppChatHeaders(slot, force = false, credentials = {}) {
-  if (!force && hasCapturedAppChatHeaders(slot.sso)) {
-    return sessionSnapshots.get(slot.sso) || {};
+  if (!force && hasCapturedAppChatHeaders(slot.key || slot.sso)) {
+    return sessionSnapshots.get(slot.key || slot.sso) || sessionSnapshots.get(slot.sso) || {};
   }
   if (force) {
     for (const key of snapshotKeys(slot)) {
@@ -1613,11 +1810,37 @@ async function probeAppChatHeaders(slot, force = false, credentials = {}) {
   }
   let input = await prepareUsableChat(page, "probe", { forcePrivate: true });
   let attemptedReuse = false;
+  if (force) {
+    if (isPersistedConversationUrl(page.url()) || !(await isPrivateChatSurface(page))) {
+      log(`probe: force reset to private surface url=${page.url()}`);
+      input = await navigateToPrivateProbeSurface(page, "probe-force-reset");
+    }
+  }
 
+  let probeAttempts = 0;
   while (true) {
+    probeAttempts += 1;
+    const earlyPair = await resolveStatsigPair(page);
+    if (isValidStatsigPair(earlyPair)) {
+      const snapKey = slot.key || slot.sso || PROFILE_SLOT_KEY;
+      const merged = mergeStatsigPairIntoSnapshot(sessionSnapshots.get(snapKey) || { sso: slot.sso || "" }, earlyPair);
+      for (const snapshotKey of snapshotKeys(slot)) { sessionSnapshots.set(snapshotKey, merged); }
+      log(`probe: valid statsig pair already available pair=yes attempt=${probeAttempts}`);
+      break;
+    }
+    if (probeAttempts > 2) { log(`probe: exceeded retry budget attempts=${probeAttempts}`); break; }
     await enableTemporaryMode(page, true);
-    if (!(await isPrivateChatSurface(page))) {
+    if (!(await isPrivateChatSurface(page)) || isPersistedConversationUrl(page.url())) {
+      log(`probe: ensuring private surface url=${page.url()}`);
       input = await navigateToPrivateProbeSurface(page, "probe-ensure-private");
+    } else {
+      input = (await findEditableComposer(page)) || input;
+      if (!input) {
+        log("probe: no composer on private surface, re-navigating");
+        input = await navigateToPrivateProbeSurface(page, "probe-ensure-private");
+      } else {
+        log(`probe: using private chat composer on url=${page.url()}`);
+      }
     }
     slot.probePageInfo = await page
       .evaluate(() => ({
@@ -1644,20 +1867,56 @@ async function probeAppChatHeaders(slot, force = false, credentials = {}) {
 
       const submitted = await submitProbeFromReadyPage(page, input, "probe");
       if (!submitted) {
+        await triggerPassiveStatsigCapture(page, slot, "probe");
+        const snapKey = slot.key || slot.sso || PROFILE_SLOT_KEY;
+        const snapAfterPassive = sessionSnapshots.get(snapKey) || {};
+        const passivePair = {
+          seed: String(snapAfterPassive.statsig_seed || ""),
+          hex: String(snapAfterPassive.statsig_hex || ""),
+        };
+        if (isValidStatsigPair(passivePair)) {
+          log(
+            `probe: hook pair captured after submit failure pair=yes seed_len=${passivePair.seed.length} hex_len=${passivePair.hex.length}`
+          );
+          await refreshSessionSnapshot(slot).catch(() => {});
+          if (!PROBE_CONSUME_UPSTREAM) {
+            await clearComposerAfterProbe(page, "probe").catch(() => {});
+          }
+          break;
+        }
+        if (await waitForCapturedHeaders(snapKey, 4000)) {
+          log("probe: headers captured via passive fetch after submit failure");
+          await refreshSessionSnapshot(slot).catch(() => {});
+          if (!PROBE_CONSUME_UPSTREAM) {
+            await clearComposerAfterProbe(page, "probe").catch(() => {});
+          }
+          break;
+        }
         if (attemptedReuse) {
           log("probe: prepared page submit not triggered, fallback to full navigation");
           input = await navigateToPrivateProbeSurface(page, "probe-fallback");
           attemptedReuse = false;
           continue;
         }
-        if (!filled) {
-          throw new BridgeError("probe_input_unstable", "Probe composer did not accept full message", 502);
-        }
-        throw new BridgeError("probe_submit_unavailable", "Probe submit action did not trigger request", 502);
+        attemptedReuse = true;
+        log("probe: submit failed on reused page, retry after private surface reset");
+        input = await navigateToPrivateProbeSurface(page, "probe-retry");
+        continue;
       }
 
-      await waitForCapturedHeaders(slot.sso, 5000);
+      await waitForCapturedHeaders(slot.key || slot.sso || PROFILE_SLOT_KEY, 5000);
       await refreshSessionSnapshot(slot).catch(() => {});
+      const pairAfterSubmit = await resolveStatsigPair(page);
+      if (isValidStatsigPair(pairAfterSubmit)) {
+        const snapKey = slot.key || slot.sso || PROFILE_SLOT_KEY;
+        const merged = mergeStatsigPairIntoSnapshot(sessionSnapshots.get(snapKey) || {}, pairAfterSubmit);
+        for (const snapshotKey of snapshotKeys(slot)) {
+          sessionSnapshots.set(snapshotKey, merged);
+        }
+        log(
+          `probe: statsig pair captured after submit pair=yes seed_len=${pairAfterSubmit.seed.length} hex_len=${pairAfterSubmit.hex.length}`
+        );
+      }
       if (!PROBE_CONSUME_UPSTREAM) {
         await clearComposerAfterProbe(page, "probe").catch(() => {});
       }
@@ -1668,16 +1927,34 @@ async function probeAppChatHeaders(slot, force = false, credentials = {}) {
     }
   }
 
-  const snapshot = sessionSnapshots.get(slot.sso) || {};
-  if (!hasCapturedAppChatHeaders(slot.sso)) {
-    log("probe completed but app-chat headers were not captured");
-  } else {
+  const snapKey = slot.key || slot.sso || PROFILE_SLOT_KEY;
+  const snapshot =
+    sessionSnapshots.get(snapKey) ||
+    sessionSnapshots.get(slot.sso || "") ||
+    {};
+  const pair = {
+    seed: String(snapshot.statsig_seed || ""),
+    hex: String(snapshot.statsig_hex || ""),
+  };
+  if (isValidStatsigPair(pair)) {
     log(
-      `probe captured app-chat headers statsig=${snapshot.x_statsig_id ? "yes" : "no"} keys=${Object.keys(
-        snapshot.request_headers || {}
-      ).join(",")}`
+      `probe completed with valid statsig pair seed_len=${pair.seed.length} hex_len=${pair.hex.length} headers=${hasCapturedAppChatHeaders(snapKey) ? "yes" : "no"}`
+    );
+    return snapshot;
+  }
+  if (!hasCapturedAppChatHeaders(snapKey) && !hasCapturedAppChatHeaders(slot.sso)) {
+    log("probe completed but app-chat headers were not captured");
+    throw new BridgeError(
+      "probe_submit_unavailable",
+      "Probe submit action did not trigger request",
+      500
     );
   }
+  log(
+    `probe captured app-chat headers statsig=${snapshot.x_statsig_id ? "yes" : "no"} keys=${Object.keys(
+      snapshot.request_headers || {}
+    ).join(",")}`
+  );
   return snapshot;
 }
 
