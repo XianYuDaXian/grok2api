@@ -12,8 +12,77 @@ let currentStatsigInfo = {
   effective_statsig_id: '',
   captured_at: '',
   user_agent: '',
-  header_keys: []
+  header_keys: [],
+  seed: { value: '', present: false, updated_at: '', updated_mode: 'none', updated_mode_label: '未设置', source: 'none' },
+  hex: { value: '', present: false, updated_at: '', updated_mode: 'none', updated_mode_label: '未设置', source: 'none' },
+  xid: { value: '', present: false, updated_at: '', updated_mode: 'none', updated_mode_label: '未设置', source: 'none' },
+  statsig_pure_enabled: false
 };
+
+function formatStatsigRefreshMode(mode, modeLabel) {
+  const m = String(mode || '').toLowerCase();
+  if (m === 'manual') return '手动刷新';
+  if (m === 'auto') return '自动刷新';
+  if (modeLabel) return String(modeLabel);
+  return '未记录';
+}
+
+function formatStatsigValuePreview(value, maxLen = 18) {
+  const v = String(value || '').trim();
+  if (!v) return '未配置';
+  if (v.length <= maxLen) return v;
+  return `${v.slice(0, maxLen)}…`;
+}
+
+function buildStatsigValueStatusCard(title, item, options = {}) {
+  const card = document.createElement('div');
+  card.className = 'rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-3 space-y-2';
+  const present = item && item.present;
+  const modeText = formatStatsigRefreshMode(item && item.updated_mode, item && item.updated_mode_label);
+  const at = formatLocalDateTime(item && item.updated_at);
+  const preview = options.previewLabel
+    ? options.previewLabel
+    : formatStatsigValuePreview(item && item.value, options.maxLen || 20);
+  const state = present ? '已配置' : '未配置';
+  card.innerHTML = `
+    <div class="text-sm font-medium">${escapeHtml(title)}</div>
+    <div class="text-[11px] text-[var(--accents-4)]">状态：${escapeHtml(state)}</div>
+    <div class="text-[11px] text-[var(--accents-4)]">最近更新：${escapeHtml(modeText)}</div>
+    <div class="text-[11px] text-[var(--accents-4)]">时间：${escapeHtml(at || '—')}</div>
+    <div class="text-xs font-mono break-all text-[var(--accents-5)]">${escapeHtml(preview)}</div>
+  `;
+  return card;
+}
+
+function refreshStatsigStatusPanel() {
+  const summary = byId('statsig-value-summary');
+  if (!summary) return;
+  summary.replaceChildren();
+  const pure = !!currentStatsigInfo.statsig_pure_enabled;
+  const xidItem = currentStatsigInfo.xid || {};
+  const xidCardOptions = {};
+  if (!xidItem.present && pure && currentStatsigInfo.seed && currentStatsigInfo.seed.present && currentStatsigInfo.hex && currentStatsigInfo.hex.present) {
+    xidCardOptions.previewLabel = '由 seed/hex 本地生成（每次请求计算）';
+  }
+  summary.appendChild(buildStatsigValueStatusCard('Seed', currentStatsigInfo.seed || {}));
+  summary.appendChild(buildStatsigValueStatusCard('HEX', currentStatsigInfo.hex || {}));
+  summary.appendChild(buildStatsigValueStatusCard('x-statsig-id', xidItem, xidCardOptions));
+
+  const input = byId('statsig-value');
+  if (input) {
+    input.value = currentStatsigInfo.effective_statsig_id || '';
+  }
+  const sourceEl = byId('statsig-source-summary');
+  if (sourceEl) {
+    const src = currentStatsigInfo.source === 'manual'
+      ? '手动覆盖'
+      : (currentStatsigInfo.source === 'browser' ? '浏览器捕获' : (currentStatsigInfo.source === 'config' ? '配置 / seed·hex 生成' : '未生效'));
+    const headerCount = Array.isArray(currentStatsigInfo.header_keys) ? currentStatsigInfo.header_keys.length : 0;
+    sourceEl.textContent = `汇总：${src}；捕获 Header ${headerCount} 个；桥接 ${currentStatsigInfo.enabled ? '已启用' : '未启用'}`;
+  }
+}
+
+
 const byId = (id) => document.getElementById(id);
 const CONFIG_TAB_GROUPS = [
   { id: 'runtime', label: '系统配置', sections: ['app', 'chat', 'video', 'voice'] },
@@ -462,6 +531,7 @@ async function loadStatsigStatus() {
     if (!res.ok) return;
     const data = await res.json();
     currentStatsigInfo = data && data.data ? data.data : currentStatsigInfo;
+    refreshStatsigStatusPanel();
   } catch (e) {
     console.warn('x-statsig-id 状态加载失败', e);
   }
@@ -789,22 +859,24 @@ function buildStatsigPanel() {
   top.appendChild(titleBox);
 
   const summary = document.createElement('div');
-  summary.className = 'grid gap-3 md:grid-cols-3';
-  const capturedAt = formatLocalDateTime(currentStatsigInfo.captured_at);
+  summary.id = 'statsig-value-summary';
+  summary.className = 'grid gap-3 md:grid-cols-1 lg:grid-cols-3';
+  summary.appendChild(buildStatsigValueStatusCard('Seed', currentStatsigInfo.seed || {}));
+  summary.appendChild(buildStatsigValueStatusCard('HEX', currentStatsigInfo.hex || {}));
+  summary.appendChild(buildStatsigValueStatusCard('x-statsig-id', currentStatsigInfo.xid || {}, (
+    (!currentStatsigInfo.xid || !currentStatsigInfo.xid.present) && currentStatsigInfo.statsig_pure_enabled
+      ? { previewLabel: '由 seed/hex 本地生成（每次请求计算）' }
+      : {}
+  )));
+
+  const sourceSummary = document.createElement('div');
+  sourceSummary.id = 'statsig-source-summary';
+  sourceSummary.className = 'text-xs text-[var(--accents-4)]';
   const headerCount = Array.isArray(currentStatsigInfo.header_keys) ? currentStatsigInfo.header_keys.length : 0;
-  [
-    { label: '当前来源', value: currentStatsigInfo.source === 'manual' ? '手动填写' : (currentStatsigInfo.source === 'browser' ? '浏览器捕获' : '未生效') },
-    { label: '最近捕获时间', value: capturedAt },
-    { label: '捕获 Header 数量', value: String(headerCount) }
-  ].forEach(item => {
-    const card = document.createElement('div');
-    card.className = 'rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-3';
-    card.innerHTML = `
-      <div class="text-[11px] text-[var(--accents-4)]">${escapeHtml(item.label)}</div>
-      <div class="mt-1 text-sm font-medium break-all">${escapeHtml(item.value)}</div>
-    `;
-    summary.appendChild(card);
-  });
+  const srcLabel = currentStatsigInfo.source === 'manual'
+    ? '手动覆盖'
+    : (currentStatsigInfo.source === 'browser' ? '浏览器捕获' : (currentStatsigInfo.source === 'config' ? '配置 / seed·hex 生成' : '未生效'));
+  sourceSummary.textContent = `汇总：${srcLabel}；捕获 Header ${headerCount} 个；桥接 ${currentStatsigInfo.enabled ? '已启用' : '未启用'}`;
 
   const effectiveLabel = document.createElement('div');
   effectiveLabel.className = 'text-xs font-medium text-[var(--accents-5)]';
@@ -821,6 +893,7 @@ function buildStatsigPanel() {
   statusGroup.className = 'rounded-2xl border border-[var(--border)] bg-[var(--bg)] p-4 space-y-3';
   statusGroup.appendChild(top);
   statusGroup.appendChild(summary);
+  statusGroup.appendChild(sourceSummary);
   statusGroup.appendChild(effectiveLabel);
   statusGroup.appendChild(input);
 
@@ -1484,6 +1557,7 @@ async function saveConfig() {
     if (res.ok) {
       btn.innerText = '成功';
       showToast('配置已保存', 'success');
+      await loadStatsigStatus();
       setTimeout(() => {
         btn.innerText = originalText;
         btn.style.backgroundColor = '';

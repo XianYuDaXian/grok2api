@@ -117,6 +117,64 @@ def _extract_statsig_pair_from_probe(probe_data: Dict[str, Any]) -> tuple[str, s
     return seed, hx
 
 
+def _probe_reason_to_mode(reason: str) -> str:
+    """将 probe 调用来源映射为管理页展示用的 manual / auto。"""
+    r = str(reason or "").strip().lower()
+    if r in ("scheduler", "prewarm", "startup", "cf_refresh"):
+        return "auto"
+    if r in ("manual", "run_probe_once"):
+        return "manual"
+    return "auto" if r == "scheduler" else "manual"
+
+
+def _statsig_meta_now() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+async def _record_statsig_pair_meta(probe_data: Dict[str, Any], *, reason: str = "probe") -> None:
+    seed, hx = _extract_statsig_pair_from_probe(probe_data or {})
+    if not seed or not hx:
+        return
+    mode = _probe_reason_to_mode(
+        str((probe_data or {}).get("__refresh_reason") or reason or "probe")
+    )
+    now = _statsig_meta_now()
+    try:
+        from app.core.config import config
+
+        await config.update(
+            {
+                "cloakbrowser": {
+                    "statsig_seed_updated_at": now,
+                    "statsig_seed_updated_mode": mode,
+                    "statsig_hex_updated_at": now,
+                    "statsig_hex_updated_mode": mode,
+                }
+            }
+        )
+    except Exception as exc:
+        logger.warning(f"Browser probe statsig pair meta record skipped: {exc}")
+
+
+async def _record_statsig_xid_meta(*, mode: str) -> None:
+    now = _statsig_meta_now()
+    try:
+        from app.core.config import config
+
+        await config.update(
+            {
+                "cloakbrowser": {
+                    "statsig_xid_updated_at": now,
+                    "statsig_xid_updated_mode": mode,
+                }
+            }
+        )
+    except Exception as exc:
+        logger.warning(f"Statsig xid meta record skipped: {exc}")
+
+
 def _is_valid_statsig_pair(seed: str, hx: str) -> bool:
     seed=str(seed or '').strip(); hx=str(hx or '').strip()
     if len(seed)<40 or len(seed)>96: return False
@@ -142,6 +200,9 @@ async def _clear_manual_statsig_if_browser_captured(probe_data: Dict[str, Any]) 
     """浏览器抓到有效 x-statsig-id 时，清空手动值，让捕获结果成为生效来源。"""
     if not probe_data or not _has_captured_app_chat_headers(probe_data):
         return
+    await _record_statsig_xid_meta(
+        mode=_probe_reason_to_mode(str(probe_data.get("__refresh_reason") or "browser_capture"))
+    )
     if not _manual_statsig_configured():
         return
     try:
@@ -325,6 +386,10 @@ async def _sync_statsig_pair_config(probe_data: Dict[str, Any]) -> None:
     if not seed or not hx:
         logger.info("Browser probe statsig pair sync skipped: pair not captured")
         return
+    await _record_statsig_pair_meta(
+        probe_data,
+        reason=str(probe_data.get("__refresh_reason") or "probe"),
+    )
     current_seed = str(get_config("proxy.statsig_seed", "") or "").strip()
     current_hex = str(get_config("proxy.statsig_hex", "") or "").strip()
     if not _should_persist_statsig_pair(current_seed, current_hex, seed, hx):
@@ -906,6 +971,8 @@ async def refresh_browser_probe_managed(
                     reason,
                     probe_cookies=probe_cookies,
                 )
+                if isinstance(probe_data, dict):
+                    probe_data["__refresh_reason"] = reason
                 await _sync_session_cookies_config(probe_data)
                 await _sync_statsig_pair_config(probe_data)
                 await _clear_manual_statsig_if_browser_captured(probe_data)

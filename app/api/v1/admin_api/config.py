@@ -1,5 +1,6 @@
 import os
 import shutil
+from datetime import datetime, timezone
 import asyncio
 from pathlib import Path
 
@@ -104,7 +105,16 @@ async def get_config():
 async def update_config(data: dict):
     """更新配置"""
     try:
+        before_seed, before_hex = _statsig_pair_from_config()
+        before_xid = str(config.get("proxy.statsig_id", "") or "").strip()
         await config.update(data)
+        after_seed, after_hex = _statsig_pair_from_config()
+        after_xid = str(config.get("proxy.statsig_id", "") or "").strip()
+        await _touch_statsig_manual_meta(
+            seed=after_seed != before_seed and bool(after_seed),
+            hx=after_hex != before_hex and bool(after_hex),
+            xid=after_xid != before_xid and bool(after_xid),
+        )
         return {"status": "success", "message": "配置已更新"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -134,6 +144,59 @@ async def refresh_cf_clearance():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+
+def _statsig_meta_iso_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _statsig_pair_from_config() -> tuple[str, str]:
+    seed = str(config.get("proxy.statsig_seed", "") or "").strip()
+    hx = str(config.get("proxy.statsig_hex", "") or "").strip()
+    return seed, hx
+
+
+def _statsig_manual_save_mode() -> str:
+    return "manual"
+
+
+async def _touch_statsig_manual_meta(*, seed: bool, hx: bool, xid: bool) -> None:
+    now = _statsig_meta_iso_now()
+    mode = _statsig_manual_save_mode()
+    patch: dict = {}
+    if seed:
+        patch["statsig_seed_updated_at"] = now
+        patch["statsig_seed_updated_mode"] = mode
+    if hx:
+        patch["statsig_hex_updated_at"] = now
+        patch["statsig_hex_updated_mode"] = mode
+    if xid:
+        patch["statsig_xid_updated_at"] = now
+        patch["statsig_xid_updated_mode"] = mode
+    if not patch:
+        return
+    await config.update({"cloakbrowser": patch})
+
+
+def _statsig_value_status(*, value: str, updated_at: str, updated_mode: str, pure_enabled: bool = False) -> dict:
+    val = str(value or "").strip()
+    mode = str(updated_mode or "").strip().lower()
+    mode_label = {"manual": "手动", "auto": "自动"}.get(mode, "")
+    if val:
+        source = "manual" if mode == "manual" else ("auto" if mode == "auto" else "config")
+        if pure_enabled and not mode_label:
+            source = "generated"
+    else:
+        source = "none"
+    return {
+        "value": val,
+        "present": bool(val),
+        "updated_at": str(updated_at or "").strip(),
+        "updated_mode": mode or "none",
+        "updated_mode_label": mode_label or ("配置" if val and not mode_label else "未设置"),
+        "source": source,
+    }
+
+
 def _current_statsig_payload() -> dict:
     manual_statsig = str(config.get("cloakbrowser.manual_statsig_id", "") or "").strip()
     session_data = {}
@@ -159,19 +222,62 @@ def _current_statsig_payload() -> dict:
         or request_headers.get("x-statsig-id")
         or ""
     ).strip()
+    seed_cfg, hex_cfg = _statsig_pair_from_config()
+    captured_fallback = str(
+        (session_data or {}).get("captured_at") or (probe_data or {}).get("captured_at") or ""
+    ).strip()
+    seed_at = str(config.get("cloakbrowser.statsig_seed_updated_at", "") or "").strip()
+    seed_mode = str(config.get("cloakbrowser.statsig_seed_updated_mode", "") or "").strip()
+    hex_at = str(config.get("cloakbrowser.statsig_hex_updated_at", "") or "").strip()
+    hex_mode = str(config.get("cloakbrowser.statsig_hex_updated_mode", "") or "").strip()
+    if seed_cfg and not seed_at and captured_fallback:
+        seed_at, seed_mode = captured_fallback, seed_mode or "auto"
+    if hex_cfg and not hex_at and captured_fallback:
+        hex_at, hex_mode = captured_fallback, hex_mode or "auto"
+    fixed_xid = str(config.get("proxy.statsig_id", "") or "").strip()
+    pure_enabled = bool(config.get("proxy.statsig_pure_enabled", False))
+    effective_xid = manual_statsig or statsig or fixed_xid
+    xid_mode = str(config.get("cloakbrowser.statsig_xid_updated_mode", "") or "").strip()
+    if manual_statsig and not xid_mode:
+        xid_mode = "manual"
+    elif statsig and not xid_mode:
+        xid_mode = "auto"
+    elif fixed_xid and not xid_mode:
+        xid_mode = "manual"
     return {
         "enabled": browser_bridge_enabled(),
         "x_statsig_id": statsig,
         "manual_statsig_id": manual_statsig,
-        "effective_statsig_id": manual_statsig or statsig,
+        "effective_statsig_id": effective_xid,
         "source": (
             "manual"
             if manual_statsig
-            else ("browser" if statsig else "none")
+            else ("browser" if statsig else ("config" if fixed_xid or (seed_cfg and hex_cfg and pure_enabled) else "none"))
         ),
         "captured_at": (session_data or {}).get("captured_at") or (probe_data or {}).get("captured_at") or "",
         "user_agent": (session_data or {}).get("user_agent") or (probe_data or {}).get("user_agent") or "",
         "header_keys": sorted(request_headers.keys()) if request_headers else [],
+        "seed": _statsig_value_status(
+            value=seed_cfg,
+            updated_at=seed_at,
+            updated_mode=seed_mode,
+        ),
+        "hex": _statsig_value_status(
+            value=hex_cfg,
+            updated_at=hex_at,
+            updated_mode=hex_mode,
+        ),
+        "xid": _statsig_value_status(
+            value=effective_xid,
+            updated_at=str(config.get("cloakbrowser.statsig_xid_updated_at", "") or "") or (
+                (session_data or {}).get("captured_at") or (probe_data or {}).get("captured_at") or ""
+            ),
+            updated_mode=xid_mode,
+            pure_enabled=bool(seed_cfg and hex_cfg and pure_enabled and not effective_xid),
+        ),
+        "statsig_pure_enabled": pure_enabled,
+        "statsig_seed": seed_cfg,
+        "statsig_hex": hex_cfg,
     }
 
 
@@ -220,6 +326,8 @@ async def update_manual_statsig(data: dict):
     try:
         value = str((data or {}).get("manual_statsig_id") or "").strip()
         await config.update({"cloakbrowser": {"manual_statsig_id": value}})
+        if value:
+            await _touch_statsig_manual_meta(seed=False, hx=False, xid=True)
         return {
             "status": "success",
             "message": "手动 x-statsig-id 已更新" if value else "手动 x-statsig-id 已清空",
