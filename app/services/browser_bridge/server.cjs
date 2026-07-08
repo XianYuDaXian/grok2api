@@ -262,7 +262,8 @@ async function injectStatsigCaptureHookNow(page) {
       if (window.__grokStatsigCaptureHooked) return;
       window.__grokStatsigCaptureHooked = true;
       window.__grokStatsigCapture = window.__grokStatsigCapture || [];
-      const subtle = crypto.subtle;
+      const subtle = globalThis.crypto && globalThis.crypto.subtle;
+      if (!subtle || typeof subtle.digest !== "function") return;
       const originalDigest = subtle.digest.bind(subtle);
       subtle.digest = function (algorithm, data) {
         try {
@@ -316,7 +317,8 @@ async function installStatsigCaptureHook(page) {
       if (window.__grokStatsigCaptureHooked) return;
       window.__grokStatsigCaptureHooked = true;
       window.__grokStatsigCapture = [];
-      const subtle = crypto.subtle;
+      const subtle = globalThis.crypto && globalThis.crypto.subtle;
+      if (!subtle || typeof subtle.digest !== "function") return;
       const originalDigest = subtle.digest.bind(subtle);
       subtle.digest = function (algorithm, data) {
         try {
@@ -404,6 +406,8 @@ async function readStatsigPairFromDom(page) {
 async function resolveStatsigPair(page) {
   const captured = await readCapturedStatsigPair(page);
   if (isValidStatsigPair(captured)) return captured;
+  const domPair = await readStatsigPairFromDom(page);
+  if (isValidStatsigPair(domPair)) return domPair;
   return { seed: "", hex: "" };
 }
 
@@ -961,7 +965,7 @@ function isPersistedConversationUrl(url) {
 async function isPrivateChatSurface(page) {
   try {
     const href = page.url();
-    if (String(href).includes("#private") || /\/c#\/?$/.test(href.replace(/\?.*$/, ""))) {
+    if (String(href).includes("#private")) {
       return true;
     }
     return await page.evaluate(() => {
@@ -1033,6 +1037,21 @@ async function navigateToPrivateProbeSurface(page, label) {
   if (!input) {
     await captureDiagnostics(page, `${label}-private-no-input`);
     throw new BridgeError("input_unavailable", `Private chat input not available for ${label}`, 502);
+  }
+  const finalUrl = page.url();
+  if (!String(finalUrl).includes("#private")) {
+    log(`${label}: private hash missing after navigation url=${finalUrl}, forcing #private`);
+    await page.goto(privateUrl, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT });
+    await dismissCookieBanner(page).catch(() => {});
+    input = await waitForChatComposer(
+      page,
+      MINIMAL_LOAD ? CHAT_INPUT_TIMEOUT_MS : READY_TIMEOUT,
+      `${label}-private-retry`
+    );
+    if (!input) {
+      await captureDiagnostics(page, `${label}-private-no-input-retry`);
+      throw new BridgeError("input_unavailable", `Private chat input not available for ${label}`, 502);
+    }
   }
   log(`${label}: private chat surface ready url=${page.url()}`);
   return input;
@@ -1307,8 +1326,12 @@ async function submitProbeFromReadyPage(page, input, label) {
 
   const requestPromise = page.waitForRequest(
     (request) => isConversationSubmitUrl(request.url()) && request.method() === "POST",
-    { timeout: 8000 }
+    { timeout: 12000 }
   );
+  const responsePromise = page.waitForResponse(
+    (resp) => isConversationSubmitUrl(resp.url()) && resp.request().method() === "POST",
+    { timeout: 12000 }
+  ).catch(() => null);
   const clearedPromise = page
     .waitForFunction(() => {
       const node =
@@ -1341,8 +1364,10 @@ async function submitProbeFromReadyPage(page, input, label) {
     try {
       await strategy();
       const requestMatched = await requestPromise.then(() => true).catch(() => false);
-      if (requestMatched) {
-        log(`${label}: probe submit triggered request`);
+      const responseMatched = (await responsePromise) !== null;
+      if (requestMatched || responseMatched) {
+        log(`${label}: probe submit triggered request=${requestMatched ? "yes" : "no"} response=${responseMatched ? "yes" : "no"}`);
+        await page.waitForTimeout(1200).catch(() => {});
         return true;
       }
       const composerCleared = (await clearedPromise) !== null;
@@ -1591,13 +1616,19 @@ async function getSlot(sso) {
         const body = request.postDataJSON();
         temporary = Boolean(body && body.temporary);
       } catch (_) {}
-      if (slot.probeActive && (!isNewConversationSubmitUrl(request.url()) || temporary !== true)) {
+      if (
+        slot.probeActive &&
+        !isNewConversationSubmitUrl(request.url()) &&
+        !isConversationSubmitUrl(request.url())
+      ) {
+        return;
+      }
+      if (slot.probeActive && isNewConversationSubmitUrl(request.url()) && temporary !== true) {
         log(
-          `ignored non-temporary probe capture url=${request.url()} temporary=${
+          `probe: capturing non-temporary UI submit url=${request.url()} temporary=${
             temporary === null ? "-" : temporary ? "yes" : "no"
           }`
         );
-        return;
       }
       const previous =
         sessionSnapshots.get(slot.sso || "") || sessionSnapshots.get(slot.key || PROFILE_SLOT_KEY) || {};
@@ -1787,9 +1818,17 @@ async function probeAppChatHeaders(slot, force = false, credentials = {}) {
         ...previous,
         request_headers: {},
         x_statsig_id: "",
+        statsig_seed: "",
+        statsig_hex: "",
         captured_at: new Date().toISOString(),
       });
     }
+    try {
+      await page.evaluate(() => {
+        window.__grokStatsigCapture = [];
+      });
+      log("probe: cleared in-page statsig capture buffer for force refresh");
+    } catch (_) {}
   }
 
   const { page, context } = slot;
@@ -1809,6 +1848,7 @@ async function probeAppChatHeaders(slot, force = false, credentials = {}) {
     }
   }
   let input = await prepareUsableChat(page, "probe", { forcePrivate: true });
+  await ensureStatsigCaptureHook(page);
   let attemptedReuse = false;
   if (force) {
     if (isPersistedConversationUrl(page.url()) || !(await isPrivateChatSurface(page))) {
@@ -1821,7 +1861,7 @@ async function probeAppChatHeaders(slot, force = false, credentials = {}) {
   while (true) {
     probeAttempts += 1;
     const earlyPair = await resolveStatsigPair(page);
-    if (isValidStatsigPair(earlyPair)) {
+    if (!force && isValidStatsigPair(earlyPair)) {
       const snapKey = slot.key || slot.sso || PROFILE_SLOT_KEY;
       const merged = mergeStatsigPairIntoSnapshot(sessionSnapshots.get(snapKey) || { sso: slot.sso || "" }, earlyPair);
       for (const snapshotKey of snapshotKeys(slot)) { sessionSnapshots.set(snapshotKey, merged); }
@@ -1904,8 +1944,10 @@ async function probeAppChatHeaders(slot, force = false, credentials = {}) {
         continue;
       }
 
-      await waitForCapturedHeaders(slot.key || slot.sso || PROFILE_SLOT_KEY, 5000);
+      await waitForCapturedHeaders(slot.key || slot.sso || PROFILE_SLOT_KEY, 8000);
       await refreshSessionSnapshot(slot).catch(() => {});
+      await ensureStatsigCaptureHook(page);
+      await page.waitForTimeout(1500).catch(() => {});
       const pairAfterSubmit = await resolveStatsigPair(page);
       if (isValidStatsigPair(pairAfterSubmit)) {
         const snapKey = slot.key || slot.sso || PROFILE_SLOT_KEY;
@@ -1927,6 +1969,9 @@ async function probeAppChatHeaders(slot, force = false, credentials = {}) {
     }
   }
 
+  await ensureStatsigCaptureHook(page);
+  await triggerPassiveStatsigCapture(page, slot, "probe-final").catch(() => {});
+  await refreshSessionSnapshot(slot).catch(() => {});
   const snapKey = slot.key || slot.sso || PROFILE_SLOT_KEY;
   const snapshot =
     sessionSnapshots.get(snapKey) ||
@@ -1939,6 +1984,13 @@ async function probeAppChatHeaders(slot, force = false, credentials = {}) {
   if (isValidStatsigPair(pair)) {
     log(
       `probe completed with valid statsig pair seed_len=${pair.seed.length} hex_len=${pair.hex.length} headers=${hasCapturedAppChatHeaders(snapKey) ? "yes" : "no"}`
+    );
+    return snapshot;
+  }
+  const xid = String(snapshot.x_statsig_id || "").trim();
+  if (xid.length >= 40) {
+    log(
+      `probe completed with captured x-statsig-id len=${xid.length} pair=no headers=${hasCapturedAppChatHeaders(snapKey) ? "yes" : "no"}`
     );
     return snapshot;
   }
