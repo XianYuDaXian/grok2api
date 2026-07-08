@@ -1029,7 +1029,7 @@ async function navigateToPrivateProbeSurface(page, label) {
     await page.goto(privateUrl, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT });
     await dismissCookieBanner(page).catch(() => {});
   }
-  const input = await waitForChatComposer(
+  let input = await waitForChatComposer(
     page,
     MINIMAL_LOAD ? CHAT_INPUT_TIMEOUT_MS : READY_TIMEOUT,
     `${label}-private`
