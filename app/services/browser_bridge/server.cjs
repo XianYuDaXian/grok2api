@@ -426,13 +426,78 @@ async function readCapturedStatsigPair(page) {
   }
 }
 
-function isValidStatsigPair(pair){if(!pair||!pair.seed||!pair.hex)return false;const seed=String(pair.seed).trim();const hex=String(pair.hex).trim();if(seed.length<40||seed.length>96)return false;if(!/^[0-9a-fA-F]+$/.test(hex))return false;if(hex.length<60||hex.length>68)return false;return true;} function mergeStatsigPairIntoSnapshot(snapshot, pair) { if(!isValidStatsigPair(pair)) return snapshot;
-  if (!pair || !pair.seed || !pair.hex) return snapshot;
+function isValidStatsigPair(pair) {
+  if (!pair || !pair.seed || !pair.hex) return false;
+  const seed = String(pair.seed).trim();
+  const hex = String(pair.hex).trim();
+  if (seed.length < 40 || seed.length > 96) return false;
+  if (!/^[0-9a-fA-F]+$/.test(hex)) return false;
+  if (hex.length < 60 || hex.length > 68) return false;
+  return true;
+}
+
+function snapshotHasUsableStatsig(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") return false;
+  if (isValidStatsigPair({ seed: snapshot.statsig_seed, hex: snapshot.statsig_hex })) return true;
+  return String(snapshot.x_statsig_id || "").trim().length >= 40;
+}
+
+function preferStatsigSnapshot(previous, candidate) {
+  const prev = previous && typeof previous === "object" ? previous : {};
+  const next = candidate && typeof candidate === "object" ? candidate : {};
+  const prevXid = String(prev.x_statsig_id || "").trim();
+  const nextXid = String(next.x_statsig_id || "").trim();
+  const prevPair = {
+    seed: String(prev.statsig_seed || ""),
+    hex: String(prev.statsig_hex || ""),
+  };
+  const nextPair = {
+    seed: String(next.statsig_seed || ""),
+    hex: String(next.statsig_hex || ""),
+  };
+  const prevPairValid = isValidStatsigPair(prevPair);
+  const nextPairValid = isValidStatsigPair(nextPair);
+  const prevHeaders = prev.request_headers && typeof prev.request_headers === "object" ? prev.request_headers : {};
+  const nextHeaders = next.request_headers && typeof next.request_headers === "object" ? next.request_headers : {};
+  const prevHeaderKeys = Object.keys(prevHeaders).length;
+  const nextHeaderKeys = Object.keys(nextHeaders).length;
+  const prevHasStatsigHeader = Boolean(prevHeaders["x-statsig-id"] || prevXid);
+  const nextHasStatsigHeader = Boolean(nextHeaders["x-statsig-id"] || nextXid);
+
+  // 永不把已有的 x-statsig-id / pair / 含 statsig 的 headers 覆盖成更弱的结果
+  const x_statsig_id =
+    nextXid.length >= 40 ? nextXid : prevXid.length >= 40 ? prevXid : nextXid || prevXid;
+  let request_headers = prevHeaders;
+  if (nextHeaderKeys > 0) {
+    if (nextHasStatsigHeader || !prevHasStatsigHeader || prevHeaderKeys === 0) {
+      request_headers = {
+        ...prevHeaders,
+        ...nextHeaders,
+      };
+      if (!request_headers["x-statsig-id"] && x_statsig_id) {
+        request_headers["x-statsig-id"] = x_statsig_id;
+      }
+    }
+  }
+  const pair = nextPairValid ? nextPair : prevPairValid ? prevPair : nextPair.seed || nextPair.hex ? nextPair : prevPair;
   return {
-    ...snapshot,
+    ...prev,
+    ...next,
+    x_statsig_id,
+    request_headers,
+    statsig_seed: pair.seed || "",
+    statsig_hex: pair.hex || "",
+    captured_at: next.captured_at || prev.captured_at || new Date().toISOString(),
+  };
+}
+
+function mergeStatsigPairIntoSnapshot(snapshot, pair) {
+  if (!isValidStatsigPair(pair)) return snapshot || {};
+  return preferStatsigSnapshot(snapshot || {}, {
+    ...(snapshot || {}),
     statsig_seed: String(pair.seed),
     statsig_hex: String(pair.hex),
-  };
+  });
 }
 
 async function captureProbeSnapshot(slot, request, payload) {
@@ -440,23 +505,23 @@ async function captureProbeSnapshot(slot, request, payload) {
   const previous =
     sessionSnapshots.get(slot.sso || "") || sessionSnapshots.get(slot.key || PROFILE_SLOT_KEY) || {};
   const statsig = headers["x-statsig-id"] || previous.x_statsig_id || "";
-  const snapshot = {
-    ...previous,
+  const candidate = {
     sso: slot.sso || "",
     request_headers: headers,
     x_statsig_id: statsig,
     captured_at: new Date().toISOString(),
   };
-  let finalSnapshot = snapshot;
   const pair = await resolveStatsigPair(slot.page);
-  finalSnapshot = mergeStatsigPairIntoSnapshot(snapshot, pair);
+  const finalSnapshot = mergeStatsigPairIntoSnapshot(preferStatsigSnapshot(previous, candidate), pair);
   for (const snapshotKey of snapshotKeys(slot)) {
     sessionSnapshots.set(snapshotKey, finalSnapshot);
   }
   log(
     `captured unconsumed probe headers url=https://grok.com/rest/app-chat/conversations/new temporary=${
       payload?.temporary === true ? "yes" : "no"
-    } statsig=${statsig ? "yes" : "no"} pair=${pair.seed && pair.hex ? "yes" : "no"} keys=${Object.keys(headers).join(",")}`
+    } statsig=${finalSnapshot.x_statsig_id ? "yes" : "no"} pair=${
+      isValidStatsigPair({ seed: finalSnapshot.statsig_seed, hex: finalSnapshot.statsig_hex }) ? "yes" : "no"
+    } keys=${Object.keys(finalSnapshot.request_headers || {}).join(",")}`
   );
   return finalSnapshot;
 }
@@ -964,14 +1029,20 @@ function isPersistedConversationUrl(url) {
 
 async function isPrivateChatSurface(page) {
   try {
-    const href = page.url();
-    if (String(href).includes("#private")) {
+    const href = String(page.url() || "");
+    // 只有明确 #private 才视为私密面；裸 /c# 不算
+    if (href.includes("#private")) {
       return true;
     }
-    return await page.evaluate(() => {
-      const text = document.body?.innerText || "";
-      return /不会出现在你的历史记录|不会用于模型训练|won't appear in your history|not be used for model training/i.test(text);
-    });
+    // 已有具体会话路径且无 #private 时，不靠页面文案误判为私密
+    if (/\/c\//.test(href) || /\/c(?:\?|$|#)/.test(href.replace(/#private.*/, ""))) {
+      // 仅当页面明确展示私密文案时才认作私密
+      return await page.evaluate(() => {
+        const text = document.body?.innerText || "";
+        return /不会出现在你的历史记录|不会用于模型训练|won't appear in your history|not be used for model training/i.test(text);
+      });
+    }
+    return false;
   } catch (_) {
     return false;
   }
@@ -1038,11 +1109,35 @@ async function navigateToPrivateProbeSurface(page, label) {
     await captureDiagnostics(page, `${label}-private-no-input`);
     throw new BridgeError("input_unavailable", `Private chat input not available for ${label}`, 502);
   }
-  const finalUrl = page.url();
+  let finalUrl = page.url();
   if (!String(finalUrl).includes("#private")) {
     log(`${label}: private hash missing after navigation url=${finalUrl}, forcing #private`);
     await page.goto(privateUrl, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT });
     await dismissCookieBanner(page).catch(() => {});
+    // SPA 可能吞掉 hash：再点一次私密入口并二次 goto
+    for (const locator of privateLinkCandidates) {
+      try {
+        if (await locator.isVisible({ timeout: 800 }).catch(() => false)) {
+          await locator.click({ timeout: 2500 }).catch(() => {});
+          log(`${label}: re-clicked private-mode link after hash missing`);
+          break;
+        }
+      } catch (_) {}
+    }
+    if (!String(page.url() || "").includes("#private")) {
+      await page.evaluate(() => {
+        try {
+          if (location.hash !== "#private") {
+            location.hash = "#private";
+          }
+        } catch (_) {}
+      }).catch(() => {});
+      await page.waitForTimeout(400).catch(() => {});
+    }
+    if (!String(page.url() || "").includes("#private")) {
+      await page.goto(privateUrl, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT });
+      await dismissCookieBanner(page).catch(() => {});
+    }
     input = await waitForChatComposer(
       page,
       MINIMAL_LOAD ? CHAT_INPUT_TIMEOUT_MS : READY_TIMEOUT,
@@ -1052,6 +1147,10 @@ async function navigateToPrivateProbeSurface(page, label) {
       await captureDiagnostics(page, `${label}-private-no-input-retry`);
       throw new BridgeError("input_unavailable", `Private chat input not available for ${label}`, 502);
     }
+  }
+  finalUrl = page.url();
+  if (!String(finalUrl).includes("#private") && !(await isPrivateChatSurface(page))) {
+    log(`${label}: private surface still unstable url=${finalUrl}`);
   }
   log(`${label}: private chat surface ready url=${page.url()}`);
   return input;
@@ -1436,11 +1535,12 @@ async function refreshSessionSnapshot(slot) {
 
 function hasCapturedAppChatHeaders(sso) {
   const snapshot = sessionSnapshots.get(sso) || {};
-  return Boolean(
-    snapshot.x_statsig_id &&
-      snapshot.request_headers &&
-      Object.keys(snapshot.request_headers).length > 0
-  );
+  const xid = String(snapshot.x_statsig_id || "").trim();
+  const headers = snapshot.request_headers || {};
+  const headerKeys = Object.keys(headers).length;
+  if (xid.length >= 40 && headerKeys > 0) return true;
+  if (headerKeys > 0 && String(headers["x-statsig-id"] || "").trim().length >= 40) return true;
+  return false;
 }
 
 async function dismissCookieBanner(page) {
@@ -1633,23 +1733,23 @@ async function getSlot(sso) {
       const previous =
         sessionSnapshots.get(slot.sso || "") || sessionSnapshots.get(slot.key || PROFILE_SLOT_KEY) || {};
       const statsig = headers["x-statsig-id"] || previous.x_statsig_id || "";
-      const snapshot = {
-        ...previous,
+      const candidate = {
         sso: slot.sso || "",
         request_headers: headers,
         x_statsig_id: statsig,
         captured_at: new Date().toISOString(),
       };
-      let finalSnapshot = snapshot;
       const pair = await resolveStatsigPair(slot.page);
-      finalSnapshot = mergeStatsigPairIntoSnapshot(snapshot, pair);
+      const finalSnapshot = mergeStatsigPairIntoSnapshot(preferStatsigSnapshot(previous, candidate), pair);
       for (const snapshotKey of snapshotKeys(slot)) {
         sessionSnapshots.set(snapshotKey, finalSnapshot);
       }
       log(
         `captured app-chat headers url=${request.url()} temporary=${
           temporary === null ? "-" : temporary ? "yes" : "no"
-        } statsig=${statsig ? "yes" : "no"} pair=${pair.seed && pair.hex ? "yes" : "no"} keys=${Object.keys(headers).join(",")}`
+        } statsig=${finalSnapshot.x_statsig_id ? "yes" : "no"} pair=${
+          isValidStatsigPair({ seed: finalSnapshot.statsig_seed, hex: finalSnapshot.statsig_hex }) ? "yes" : "no"
+        } keys=${Object.keys(finalSnapshot.request_headers || {}).join(",")}`
       );
     } catch (error) {
       log(`capture request headers failed: ${error.message}`);
@@ -1753,21 +1853,42 @@ async function triggerPassiveStatsigCapture(page, slot, label = "probe") {
         const headers = appChatRequestHeaders(await response.request().allHeaders());
         const statsig = headers["x-statsig-id"] || "";
         const previous = sessionSnapshots.get(key) || {};
-        let snapshot = {
-          ...previous,
-          sso: slot.sso || "",
-          request_headers: headers,
-          x_statsig_id: statsig,
-          captured_at: new Date().toISOString(),
-        };
-        const pair = await resolveStatsigPair(page);
-        snapshot = mergeStatsigPairIntoSnapshot(snapshot, pair);
-        for (const snapshotKey of snapshotKeys(slot)) {
-          sessionSnapshots.set(snapshotKey, snapshot);
+        // 若已有可用 xid/pair，且本次 passive 更弱，则跳过覆盖
+        if (snapshotHasUsableStatsig(previous) && String(statsig || "").trim().length < 40) {
+          const pairOnly = await resolveStatsigPair(page);
+          if (isValidStatsigPair(pairOnly)) {
+            const upgraded = mergeStatsigPairIntoSnapshot(previous, pairOnly);
+            for (const snapshotKey of snapshotKeys(slot)) {
+              sessionSnapshots.set(snapshotKey, upgraded);
+            }
+            log(
+              `${label}: passive pair upgrade only seed_len=${pairOnly.seed.length} hex_len=${pairOnly.hex.length} keep_existing_headers=yes`
+            );
+          } else {
+            log(
+              `${label}: passive statsig skipped weaker capture status=${response.status()} statsig=no keep_existing=yes keys=${Object.keys(headers).join(",")}`
+            );
+          }
+        } else {
+          const candidate = {
+            sso: slot.sso || "",
+            request_headers: headers,
+            x_statsig_id: statsig,
+            captured_at: new Date().toISOString(),
+          };
+          const pair = await resolveStatsigPair(page);
+          const snapshot = mergeStatsigPairIntoSnapshot(preferStatsigSnapshot(previous, candidate), pair);
+          for (const snapshotKey of snapshotKeys(slot)) {
+            sessionSnapshots.set(snapshotKey, snapshot);
+          }
+          log(
+            `${label}: passive statsig captured from waitForResponse status=${response.status()} statsig=${
+              snapshot.x_statsig_id ? "yes" : "no"
+            } pair=${
+              isValidStatsigPair({ seed: snapshot.statsig_seed, hex: snapshot.statsig_hex }) ? "yes" : "no"
+            } keys=${Object.keys(snapshot.request_headers || {}).join(",")}`
+          );
         }
-        log(
-          `${label}: passive statsig captured from waitForResponse status=${response.status()} statsig=${statsig ? "yes" : "no"} pair=${pair.seed && pair.hex ? "yes" : "no"} keys=${Object.keys(headers).join(",")}`
-        );
       } catch (error) {
         log(`${label}: passive statsig response capture failed: ${error.message}`);
       }
@@ -1808,6 +1929,7 @@ async function waitForSlotProbeReady(slot, label) {
 }
 
 async function probeAppChatHeaders(slot, force = false, credentials = {}) {
+  const { page, context } = slot;
   if (!force && hasCapturedAppChatHeaders(slot.key || slot.sso)) {
     return sessionSnapshots.get(slot.key || slot.sso) || sessionSnapshots.get(slot.sso) || {};
   }
@@ -1824,14 +1946,14 @@ async function probeAppChatHeaders(slot, force = false, credentials = {}) {
       });
     }
     try {
-      await page.evaluate(() => {
-        window.__grokStatsigCapture = [];
-      });
-      log("probe: cleared in-page statsig capture buffer for force refresh");
+      if (page) {
+        await page.evaluate(() => {
+          window.__grokStatsigCapture = [];
+        });
+        log("probe: cleared in-page statsig capture buffer for force refresh");
+      }
     } catch (_) {}
   }
-
-  const { page, context } = slot;
   const freshCookies = Array.isArray(credentials.cookies) ? credentials.cookies : [];
   const injectedFreshCookies = await applyProbeCookies(context, freshCookies);
   let skipInitialGoto = slot.ready && !injectedFreshCookies;
@@ -1858,6 +1980,8 @@ async function probeAppChatHeaders(slot, force = false, credentials = {}) {
   }
 
   let probeAttempts = 0;
+  let submitSeen = false;
+  let bestXidSeen = "";
   while (true) {
     probeAttempts += 1;
     const earlyPair = await resolveStatsigPair(page);
@@ -1870,8 +1994,10 @@ async function probeAppChatHeaders(slot, force = false, credentials = {}) {
     }
     if (probeAttempts > 2) { log(`probe: exceeded retry budget attempts=${probeAttempts}`); break; }
     await enableTemporaryMode(page, true);
-    if (!(await isPrivateChatSurface(page)) || isPersistedConversationUrl(page.url())) {
-      log(`probe: ensuring private surface url=${page.url()}`);
+    // 私密 hash 不稳定时强制回到 #private，避免仅靠文案误判
+    const onPrivateHash = String(page.url() || "").includes("#private");
+    if (!onPrivateHash || isPersistedConversationUrl(page.url()) || !(await isPrivateChatSurface(page))) {
+      log(`probe: ensuring private surface url=${page.url()} hash_private=${onPrivateHash ? "yes" : "no"}`);
       input = await navigateToPrivateProbeSurface(page, "probe-ensure-private");
     } else {
       input = (await findEditableComposer(page)) || input;
@@ -1914,6 +2040,8 @@ async function probeAppChatHeaders(slot, force = false, credentials = {}) {
           seed: String(snapAfterPassive.statsig_seed || ""),
           hex: String(snapAfterPassive.statsig_hex || ""),
         };
+        const passiveXid = String(snapAfterPassive.x_statsig_id || "").trim();
+        if (passiveXid.length > bestXidSeen.length) bestXidSeen = passiveXid;
         if (isValidStatsigPair(passivePair)) {
           log(
             `probe: hook pair captured after submit failure pair=yes seed_len=${passivePair.seed.length} hex_len=${passivePair.hex.length}`
@@ -1924,7 +2052,7 @@ async function probeAppChatHeaders(slot, force = false, credentials = {}) {
           }
           break;
         }
-        if (await waitForCapturedHeaders(snapKey, 4000)) {
+        if (await waitForCapturedHeaders(snapKey, 4000) || snapshotHasUsableStatsig(snapAfterPassive)) {
           log("probe: headers captured via passive fetch after submit failure");
           await refreshSessionSnapshot(slot).catch(() => {});
           if (!PROBE_CONSUME_UPSTREAM) {
@@ -1944,20 +2072,37 @@ async function probeAppChatHeaders(slot, force = false, credentials = {}) {
         continue;
       }
 
+      submitSeen = true;
       await waitForCapturedHeaders(slot.key || slot.sso || PROFILE_SLOT_KEY, 8000);
       await refreshSessionSnapshot(slot).catch(() => {});
       await ensureStatsigCaptureHook(page);
-      await page.waitForTimeout(1500).catch(() => {});
-      const pairAfterSubmit = await resolveStatsigPair(page);
+      // 给 digest hook 更长时间产出 pair
+      await page.waitForTimeout(2500).catch(() => {});
+      let pairAfterSubmit = await resolveStatsigPair(page);
+      if (!isValidStatsigPair(pairAfterSubmit)) {
+        await page.waitForTimeout(2000).catch(() => {});
+        pairAfterSubmit = await resolveStatsigPair(page);
+      }
+      const snapKeyAfter = slot.key || slot.sso || PROFILE_SLOT_KEY;
+      const snapNow = sessionSnapshots.get(snapKeyAfter) || {};
+      const xidNow = String(snapNow.x_statsig_id || "").trim();
+      if (xidNow.length > bestXidSeen.length) bestXidSeen = xidNow;
       if (isValidStatsigPair(pairAfterSubmit)) {
-        const snapKey = slot.key || slot.sso || PROFILE_SLOT_KEY;
-        const merged = mergeStatsigPairIntoSnapshot(sessionSnapshots.get(snapKey) || {}, pairAfterSubmit);
+        const merged = mergeStatsigPairIntoSnapshot(snapNow, pairAfterSubmit);
         for (const snapshotKey of snapshotKeys(slot)) {
           sessionSnapshots.set(snapshotKey, merged);
         }
         log(
           `probe: statsig pair captured after submit pair=yes seed_len=${pairAfterSubmit.seed.length} hex_len=${pairAfterSubmit.hex.length}`
         );
+      } else if (xidNow.length >= 40 && probeAttempts < 2) {
+        // 已有 xid 但无 pair：再走一轮全新私密面，提高 hook 命中
+        log(`probe: submit captured x-statsig-id but no pair, retry private surface once len=${xidNow.length}`);
+        if (!PROBE_CONSUME_UPSTREAM) {
+          await clearComposerAfterProbe(page, "probe").catch(() => {});
+        }
+        input = await navigateToPrivateProbeSurface(page, "probe-pair-retry");
+        continue;
       }
       if (!PROBE_CONSUME_UPSTREAM) {
         await clearComposerAfterProbe(page, "probe").catch(() => {});
@@ -1970,13 +2115,44 @@ async function probeAppChatHeaders(slot, force = false, credentials = {}) {
   }
 
   await ensureStatsigCaptureHook(page);
-  await triggerPassiveStatsigCapture(page, slot, "probe-final").catch(() => {});
+  const snapKeyPreFinal = slot.key || slot.sso || PROFILE_SLOT_KEY;
+  const preFinal = sessionSnapshots.get(snapKeyPreFinal) || {};
+  // 已有可用 statsig 时跳过 final passive，避免二次 fetch 冲掉 headers
+  if (!snapshotHasUsableStatsig(preFinal)) {
+    await triggerPassiveStatsigCapture(page, slot, "probe-final").catch(() => {});
+  } else {
+    log("probe-final: skip passive fetch, keep stronger captured snapshot");
+    const hookPair = await resolveStatsigPair(page);
+    if (isValidStatsigPair(hookPair)) {
+      const upgraded = mergeStatsigPairIntoSnapshot(preFinal, hookPair);
+      for (const snapshotKey of snapshotKeys(slot)) {
+        sessionSnapshots.set(snapshotKey, upgraded);
+      }
+      log(
+        `probe-final: hook pair prefetch pair=yes seed_len=${hookPair.seed.length} hex_len=${hookPair.hex.length}`
+      );
+    }
+  }
   await refreshSessionSnapshot(slot).catch(() => {});
   const snapKey = slot.key || slot.sso || PROFILE_SLOT_KEY;
-  const snapshot =
+  let snapshot =
     sessionSnapshots.get(snapKey) ||
     sessionSnapshots.get(slot.sso || "") ||
     {};
+  // 用本轮见过的最强 xid 回填
+  if (bestXidSeen && String(snapshot.x_statsig_id || "").trim().length < bestXidSeen.length) {
+    snapshot = preferStatsigSnapshot(snapshot, {
+      x_statsig_id: bestXidSeen,
+      request_headers: {
+        ...(snapshot.request_headers || {}),
+        "x-statsig-id": bestXidSeen,
+      },
+      captured_at: new Date().toISOString(),
+    });
+    for (const snapshotKey of snapshotKeys(slot)) {
+      sessionSnapshots.set(snapshotKey, snapshot);
+    }
+  }
   const pair = {
     seed: String(snapshot.statsig_seed || ""),
     hex: String(snapshot.statsig_hex || ""),
@@ -1987,7 +2163,7 @@ async function probeAppChatHeaders(slot, force = false, credentials = {}) {
     );
     return snapshot;
   }
-  const xid = String(snapshot.x_statsig_id || "").trim();
+  const xid = String(snapshot.x_statsig_id || bestXidSeen || "").trim();
   if (xid.length >= 40) {
     log(
       `probe completed with captured x-statsig-id len=${xid.length} pair=no headers=${hasCapturedAppChatHeaders(snapKey) ? "yes" : "no"}`
@@ -1995,6 +2171,14 @@ async function probeAppChatHeaders(slot, force = false, credentials = {}) {
     return snapshot;
   }
   if (!hasCapturedAppChatHeaders(snapKey) && !hasCapturedAppChatHeaders(slot.sso)) {
+    if (submitSeen) {
+      log("probe completed: request triggered but statsig headers/pair missing");
+      throw new BridgeError(
+        "probe_statsig_missing",
+        "Probe request completed without statsig pair or x-statsig-id",
+        500
+      );
+    }
     log("probe completed but app-chat headers were not captured");
     throw new BridgeError(
       "probe_submit_unavailable",
