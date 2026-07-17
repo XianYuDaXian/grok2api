@@ -218,6 +218,25 @@ async def start(cf_cookies: list | None = None) -> None:
     env["GROK_CLOAK_CHAT_INPUT_TIMEOUT_MS"] = str(
         int(get_config("cloakbrowser.chat_input_timeout_ms", 15000) or 15000)
     )
+    env["GROK_CLOAK_ALLOW_EXTENSIONS"] = (
+        "true" if bool(get_config("cloakbrowser.allow_extensions", True)) else "false"
+    )
+    extension_paths = get_config("cloakbrowser.extension_paths", [])
+    if isinstance(extension_paths, str):
+        env["GROK_CLOAK_EXTENSION_PATHS"] = extension_paths.strip()
+    elif isinstance(extension_paths, (list, tuple)):
+        resolved_paths: list[str] = []
+        for item in extension_paths:
+            value = str(item or "").strip()
+            if not value:
+                continue
+            path = Path(value)
+            if not path.is_absolute():
+                path = (BASE_DIR.parent.parent.parent / path).resolve()
+            resolved_paths.append(str(path))
+        env["GROK_CLOAK_EXTENSION_PATHS"] = ";".join(resolved_paths)
+    else:
+        env["GROK_CLOAK_EXTENSION_PATHS"] = ""
 
     proxy_url = _bridge_proxy_url()
     if proxy_url:

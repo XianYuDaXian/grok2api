@@ -226,6 +226,10 @@ minimal_page_load = true
 retain_static_cache = true
 # 最少加载模式下等待聊天输入框的超时（毫秒）
 chat_input_timeout_ms = 15000
+# 是否允许 Playwright 加载浏览器扩展（忽略 --disable-extensions）
+allow_extensions = true
+# 需要加载的扩展目录（解压后的 extension 根目录，包含 manifest.json）；逗号/分号分隔或数组
+extension_paths = []
 
 # ==================== 图像配置 ====================
 [image]

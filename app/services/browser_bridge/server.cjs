@@ -26,6 +26,9 @@ const CHAT_INPUT_TIMEOUT_MS = parseInt(
   process.env.GROK_CLOAK_CHAT_INPUT_TIMEOUT_MS || "15000",
   10
 );
+const ALLOW_EXTENSIONS =
+  String(process.env.GROK_CLOAK_ALLOW_EXTENSIONS || "true").toLowerCase() !== "false";
+const EXTENSION_PATHS_RAW = (process.env.GROK_CLOAK_EXTENSION_PATHS || "").trim();
 
 let browser = null;
 const pages = new Map();
@@ -408,19 +411,84 @@ async function resolveStatsigPair(page) {
   if (isValidStatsigPair(captured)) return captured;
   const domPair = await readStatsigPairFromDom(page);
   if (isValidStatsigPair(domPair)) return domPair;
+  // 兜底：seed 来自 meta，hex 来自最近一次 digest 捕获
+  const hybrid = await readHybridStatsigPair(page);
+  if (isValidStatsigPair(hybrid)) return hybrid;
   return { seed: "", hex: "" };
 }
 
-async function readCapturedStatsigPair(page) {
+async function readMetaSeed(page) {
   try {
     return await page.evaluate(() => {
-      const list = window.__grokStatsigCapture || [];
-      const last = list[list.length - 1];
-      if (!last || !last.seed || !last.hex) {
-        return { seed: "", hex: "" };
-      }
-      return { seed: String(last.seed), hex: String(last.hex) };
+      const metas = [...document.querySelectorAll("meta[name]")];
+      const preferred =
+        metas.find((m) => String(m.getAttribute("name") || "") === "grok-site\u2015verification") ||
+        metas.find((m) => /grok-site/i.test(String(m.getAttribute("name") || ""))) ||
+        metas.find((m) => /^gr/i.test(String(m.getAttribute("name") || "")));
+      return preferred
+        ? String(preferred.content || preferred.getAttribute("content") || "").trim()
+        : "";
     });
+  } catch (_) {
+    return "";
+  }
+}
+
+async function readHybridStatsigPair(page) {
+  try {
+    const seed = await readMetaSeed(page);
+    const captured = await readCapturedStatsigPair(page, { allowSeedless: true });
+    const hex = String(captured.hex || "").trim();
+    if (seed && hex) return { seed, hex };
+    return { seed: seed || "", hex };
+  } catch (_) {
+    return { seed: "", hex: "" };
+  }
+}
+
+async function readCaptureDiagnostics(page) {
+  try {
+    return await page.evaluate(() => {
+      const list = Array.isArray(window.__grokStatsigCapture) ? window.__grokStatsigCapture : [];
+      const last = list[list.length - 1] || null;
+      return {
+        hooked: Boolean(window.__grokStatsigCaptureHooked),
+        count: list.length,
+        last_seed_len: last ? String(last.seed || "").length : 0,
+        last_hex_len: last ? String(last.hex || "").length : 0,
+      };
+    });
+  } catch (_) {
+    return { hooked: false, count: 0, last_seed_len: 0, last_hex_len: 0 };
+  }
+}
+
+async function waitForStatsigPair(page, timeoutMs = 8000) {
+  const deadline = Date.now() + Math.max(Number(timeoutMs) || 0, 0);
+  let last = { seed: "", hex: "" };
+  while (Date.now() <= deadline) {
+    last = await resolveStatsigPair(page);
+    if (isValidStatsigPair(last)) return last;
+    await page.waitForTimeout(400).catch(() => {});
+  }
+  return last;
+}
+
+async function readCapturedStatsigPair(page, options = {}) {
+  const allowSeedless = options && options.allowSeedless === true;
+  try {
+    return await page.evaluate((allowSeedlessInner) => {
+      const list = Array.isArray(window.__grokStatsigCapture) ? window.__grokStatsigCapture : [];
+      for (let i = list.length - 1; i >= 0; i -= 1) {
+        const item = list[i] || {};
+        const seed = String(item.seed || "").trim();
+        const hex = String(item.hex || "").trim();
+        if (!hex) continue;
+        if (seed) return { seed, hex };
+        if (allowSeedlessInner) return { seed: "", hex };
+      }
+      return { seed: "", hex: "" };
+    }, allowSeedless);
   } catch (_) {
     return { seed: "", hex: "" };
   }
@@ -538,6 +606,73 @@ function ensureDiagDir() {
   return DIAG_DIR;
 }
 
+function parseExtensionPaths(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return [];
+  let items = [];
+  if (text.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(text);
+      if (Array.isArray(parsed)) items = parsed;
+    } catch (_) {
+      items = [];
+    }
+  }
+  if (!items.length) {
+    items = text.split(/[;,\n]+/).map((item) => item.trim()).filter(Boolean);
+  }
+  const resolved = [];
+  for (const item of items) {
+    const value = String(item || "").trim();
+    if (!value) continue;
+    const absolute = path.isAbsolute(value) ? value : path.resolve(process.cwd(), value);
+    try {
+      if (fs.existsSync(absolute) && fs.statSync(absolute).isDirectory()) {
+        resolved.push(absolute);
+      } else {
+        log(`extension path skipped (missing or not dir): ${absolute}`);
+      }
+    } catch (error) {
+      log(`extension path check failed: ${absolute} err=${error.message}`);
+    }
+  }
+  return [...new Set(resolved)];
+}
+
+function applyExtensionLaunchOptions(launchOptions) {
+  if (!ALLOW_EXTENSIONS) {
+    log("extension load disabled by config");
+    return launchOptions;
+  }
+  const extensions = parseExtensionPaths(EXTENSION_PATHS_RAW);
+  // Playwright 默认带 --disable-extensions，必须忽略后才能加载扩展
+  const ignore = Array.isArray(launchOptions.ignoreDefaultArgs)
+    ? launchOptions.ignoreDefaultArgs.slice()
+    : [];
+  if (!ignore.includes("--disable-extensions")) {
+    ignore.push("--disable-extensions");
+  }
+  launchOptions.ignoreDefaultArgs = ignore;
+
+  const args = Array.isArray(launchOptions.args) ? launchOptions.args.slice() : [];
+  const filtered = args.filter(
+    (arg) =>
+      !String(arg).startsWith("--disable-extensions") &&
+      !String(arg).startsWith("--load-extension=") &&
+      !String(arg).startsWith("--disable-extensions-except=")
+  );
+  if (extensions.length) {
+    const joined = extensions.join(",");
+    filtered.push(`--disable-extensions-except=${joined}`);
+    filtered.push(`--load-extension=${joined}`);
+    log(`extension load enabled count=${extensions.length} paths=${joined}`);
+  } else {
+    log("extension load enabled without explicit paths (allow profile/default extensions)");
+  }
+  launchOptions.args = filtered;
+  return launchOptions;
+}
+
 async function captureDiagnostics(page, label) {
   try {
     const info = await page.evaluate(() => ({
@@ -600,6 +735,7 @@ async function ensureBrowser() {
   if (effectiveUserAgent) {
     launchOptions.userAgent = effectiveUserAgent;
   }
+  applyExtensionLaunchOptions(launchOptions);
 
   const userDataDir = ensureProfileDir();
   if (userDataDir) {
@@ -2075,14 +2211,9 @@ async function probeAppChatHeaders(slot, force = false, credentials = {}) {
       submitSeen = true;
       await waitForCapturedHeaders(slot.key || slot.sso || PROFILE_SLOT_KEY, 8000);
       await refreshSessionSnapshot(slot).catch(() => {});
-      await ensureStatsigCaptureHook(page);
-      // 给 digest hook 更长时间产出 pair
-      await page.waitForTimeout(2500).catch(() => {});
-      let pairAfterSubmit = await resolveStatsigPair(page);
-      if (!isValidStatsigPair(pairAfterSubmit)) {
-        await page.waitForTimeout(2000).catch(() => {});
-        pairAfterSubmit = await resolveStatsigPair(page);
-      }
+await ensureStatsigCaptureHook(page);
+// 提交后轮询 digest/DOM 捕获，给 pair 更长产出窗口
+let pairAfterSubmit = await waitForStatsigPair(page, 8000);
       const snapKeyAfter = slot.key || slot.sso || PROFILE_SLOT_KEY;
       const snapNow = sessionSnapshots.get(snapKeyAfter) || {};
       const xidNow = String(snapNow.x_statsig_id || "").trim();
@@ -2114,7 +2245,7 @@ async function probeAppChatHeaders(slot, force = false, credentials = {}) {
     }
   }
 
-  await ensureStatsigCaptureHook(page);
+await ensureStatsigCaptureHook(page);
   const snapKeyPreFinal = slot.key || slot.sso || PROFILE_SLOT_KEY;
   const preFinal = sessionSnapshots.get(snapKeyPreFinal) || {};
   // 已有可用 statsig 时跳过 final passive，避免二次 fetch 冲掉 headers
@@ -2122,14 +2253,25 @@ async function probeAppChatHeaders(slot, force = false, credentials = {}) {
     await triggerPassiveStatsigCapture(page, slot, "probe-final").catch(() => {});
   } else {
     log("probe-final: skip passive fetch, keep stronger captured snapshot");
-    const hookPair = await resolveStatsigPair(page);
-    if (isValidStatsigPair(hookPair)) {
-      const upgraded = mergeStatsigPairIntoSnapshot(preFinal, hookPair);
+  }
+  // 收尾强制轮询 in-page capture / DOM，避免只拿到 xid 却丢 pair
+  {
+    const diag = await readCaptureDiagnostics(page);
+    log(
+      `probe-final: capture buffer hooked=${diag.hooked ? "yes" : "no"} count=${diag.count} last_seed_len=${diag.last_seed_len} last_hex_len=${diag.last_hex_len}`
+    );
+    const finalPair = await waitForStatsigPair(page, 10000);
+    if (isValidStatsigPair(finalPair)) {
+      const upgraded = mergeStatsigPairIntoSnapshot(sessionSnapshots.get(snapKeyPreFinal) || preFinal, finalPair);
       for (const snapshotKey of snapshotKeys(slot)) {
         sessionSnapshots.set(snapshotKey, upgraded);
       }
       log(
-        `probe-final: hook pair prefetch pair=yes seed_len=${hookPair.seed.length} hex_len=${hookPair.hex.length}`
+        `probe-final: forced pair recovery pair=yes seed_len=${finalPair.seed.length} hex_len=${finalPair.hex.length}`
+      );
+    } else {
+      log(
+        `probe-final: forced pair recovery pair=no seed_len=${String(finalPair.seed || "").length} hex_len=${String(finalPair.hex || "").length}`
       );
     }
   }
@@ -2151,6 +2293,16 @@ async function probeAppChatHeaders(slot, force = false, credentials = {}) {
     });
     for (const snapshotKey of snapshotKeys(slot)) {
       sessionSnapshots.set(snapshotKey, snapshot);
+    }
+  }
+  // 最终再读一次页面，确保返回值带 pair
+  {
+    const latestPair = await resolveStatsigPair(page);
+    if (isValidStatsigPair(latestPair)) {
+      snapshot = mergeStatsigPairIntoSnapshot(snapshot, latestPair);
+      for (const snapshotKey of snapshotKeys(slot)) {
+        sessionSnapshots.set(snapshotKey, snapshot);
+      }
     }
   }
   const pair = {
